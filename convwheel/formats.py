@@ -116,7 +116,7 @@ def _folder_targets(path: Path) -> list[Target]:
     if any(f.suffix.lower() not in (".jpg", ".jpeg") for f in imgs):
         out.append(Target("jpgall", "JPG", "Фото → JPG", "#FFB547", folder.photos_to_jpg))
     if imgs:
-        out.append(Target("shrink", "СЖАТЬ", "Фото для отправки", "#3DDC97", folder.compress_photos))
+        out.append(Target("shrink", "СЖАТЬ", "Для отправки", "#3DDC97", folder.compress_photos))
     out.append(Target("list", "TXT", "Список файлов", "#B8C2CC", folder.file_list))
     return out[:8]
 

@@ -436,7 +436,7 @@ class ConvertWheel(QWidget):
             p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), int(200 * h)), 1.4))
             p.drawPath(path)
 
-        pos, lift = self._label_pos(i, (R_IN + R_OUT) / 2 + 4, h)
+        pos, lift = self._label_pos(i, (R_IN + R_OUT) / 2 + 4, h, t, R_OUT - 14)
         f = self._label_font(t)
         p.setFont(f)
         w = QFontMetrics(f).horizontalAdvance(t.label) + 18
@@ -554,7 +554,7 @@ class ConvertWheel(QWidget):
         p.fillPath(path, hl)
         p.restore()
 
-        pos, lift = self._label_pos(i, (CIT_RI + CIT_RO) / 2 + 6, h)
+        pos, lift = self._label_pos(i, (CIT_RI + CIT_RO) / 2 + 6, h, t, CIT_RO - 10)
         f = self._label_font(t)
         p.setFont(f)
         box = QRectF(pos.x() - 70, pos.y() - 24 - lift, 140, 30)
@@ -566,8 +566,17 @@ class ConvertWheel(QWidget):
         p.restore()
 
     # ================================================================ общее
-    def _label_pos(self, i: int, rr: float, h: float) -> tuple[QPointF, float]:
+    def _label_pos(self, i: int, rr: float, h: float, t: Target | None = None,
+                   r_max: float = 0.0) -> tuple[QPointF, float]:
         mid = math.radians(self.seg_center_angle(i))
+        if t is not None and r_max:
+            # широкие подписи на боковых секторах сдвигаем к центру, чтобы не залезали на край
+            half_w = max(QFontMetrics(self._label_font(t)).horizontalAdvance(t.label),
+                         QFontMetrics(self._hint_font(t)).horizontalAdvance(t.hint)) / 2 + 4
+            cos = abs(math.cos(mid))
+            if cos > 0.05:
+                rr = min(rr, (r_max - half_w) / cos)
+            rr = max(rr, R_IN + 30)
         rr += h * 5
         return QPointF(self.c.x() + rr * math.cos(mid), self.c.y() - rr * math.sin(mid)), 3 * h
 
@@ -577,13 +586,16 @@ class ConvertWheel(QWidget):
         f.setWeight(QFont.Bold)
         return f
 
-    def _paint_hint(self, p: QPainter, t: Target, pos: QPointF, lift: float, col: QColor):
+    def _hint_font(self, t: Target) -> QFont:
         f2 = QFont(self.font())
         f2.setPixelSize(11)
         if self.pal.citrus:
             f2.setWeight(QFont.Medium)
             f2.setPixelSize(10 if len(t.hint) > 14 else 11)
-        p.setFont(f2)
+        return f2
+
+    def _paint_hint(self, p: QPainter, t: Target, pos: QPointF, lift: float, col: QColor):
+        p.setFont(self._hint_font(t))
         p.setPen(col)
         p.drawText(QRectF(pos.x() - 62, pos.y() + 11 - lift, 124, 16), Qt.AlignCenter, t.hint)
 
