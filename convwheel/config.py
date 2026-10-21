@@ -23,6 +23,8 @@ class Config:
     jpeg_quality: int = 92
     # Если пусто — результат кладётся рядом с исходным файлом
     output_dir: str = ""
+    # Оформление колеса: "citrus" (серая долька цитруса) или "classic" (тёмное с цветными секторами)
+    theme: str = "citrus"
     extra: dict = field(default_factory=dict)
 
     @classmethod

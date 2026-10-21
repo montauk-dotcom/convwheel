@@ -86,6 +86,14 @@ class ConvWheelApp(QObject):
             grp.addAction(a)
             sub.addAction(a)
 
+        look = m.addMenu("Оформление")
+        g3 = QActionGroup(look)
+        for key, label in (("citrus", "Цитрус (серый)"), ("classic", "Классика (цветной)")):
+            a = QAction(label, look, checkable=True, checked=CONFIG.theme == key)
+            a.triggered.connect(lambda _=False, k=key: self._set_theme(k))
+            g3.addAction(a)
+            look.addAction(a)
+
         if IS_WIN:
             eng = m.addMenu("Офисный движок")
             g2 = QActionGroup(eng)
@@ -114,6 +122,10 @@ class ConvWheelApp(QObject):
 
     def _set_button(self, key: str):
         CONFIG.trigger_button = key
+        CONFIG.save()
+
+    def _set_theme(self, key: str):
+        CONFIG.theme = key
         CONFIG.save()
 
     def _set_engine(self, key: str):

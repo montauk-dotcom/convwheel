@@ -7,6 +7,7 @@ openpyxl>=3.1
 Pillow>=10.0
 imageio-ffmpeg>=0.5     # ffmpeg уже внутри, отдельно ставить не нужно
 markdown>=3.5
+py7zr>=0.21             # архивы 7Z
 pillow-heif>=0.16       # фото HEIC с iPhone
 
 # Windows

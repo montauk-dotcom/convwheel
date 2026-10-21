@@ -1,4 +1,4 @@
-"""Windows: какой файл под курсором в Проводнике или на рабочем столе.
+"""Windows: какой файл или папка под курсором в Проводнике или на рабочем столе.
 
 Используем три источника, от точного к запасному:
   1. UI Automation — имя элемента списка под курсором (работает в любой колонке
@@ -130,8 +130,13 @@ def _desktop_view():
 
 
 def _is_file(item) -> bool:
+    """Настоящий файл или папка на диске (не «Этот компьютер», не корень диска).
+    ZIP-архивы Проводник считает папками — os.path.isfile их всё равно отличит."""
     try:
-        return (not item.IsFolder) and os.path.isfile(item.Path)
+        p = item.Path
+        if os.path.isfile(p):
+            return True
+        return os.path.isdir(p) and Path(p).parent != Path(p)
     except Exception:
         return False
 
@@ -200,7 +205,7 @@ def _desktop_fallback(name: str) -> str | None:
         if not d.is_dir():
             continue
         for f in d.iterdir():
-            if f.is_file():
+            if f.is_file() or f.is_dir():
                 if f.name == name:
                     exact.append(f)
                 elif f.stem == name:

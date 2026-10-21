@@ -5,6 +5,8 @@ dist/
 __pycache__/
 *.pyc
 packaging/icon.png
+packaging/icon.ico
 tests/out/
+tests/out_folders/
 tests/fixtures/
 .DS_Store

@@ -1,7 +1,7 @@
-# Автоматическая сборка ConvWheel для macOS.
+# Автоматическая сборка ConvWheel для macOS и Windows.
 # Срабатывает при каждой загрузке изменений в main, вручную (кнопка «Run workflow»)
-# и при создании тега v1.0.1 и т.п. — тогда DMG ещё и публикуется в Releases.
-name: Сборка для macOS
+# и при создании тега v1.0.1 и т.п. — тогда файлы ещё и публикуются в Releases.
+name: Сборка
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
   contents: write   # нужно для публикации в Releases
 
 jobs:
-  build:
+  macos:
     strategy:
       fail-fast: false
       matrix:
@@ -75,3 +75,44 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
+
+  windows:
+    runs-on: windows-latest
+    name: Windows x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Сборка .exe и установщика
+        shell: pwsh
+        env:
+          CI: "1"
+          PYTHONIOENCODING: utf-8
+        run: ./build_windows.ps1
+
+      - name: Сохранить установщик
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConvWheel-Windows-Setup
+          path: dist/ConvWheel-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Сохранить portable-версию
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConvWheel-Windows-Portable
+          path: dist/*-windows-portable.zip
+          if-no-files-found: error
+
+      - name: Опубликовать в Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ConvWheel-Setup-*.exe
+            dist/*-windows-portable.zip

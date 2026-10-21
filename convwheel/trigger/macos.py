@@ -51,5 +51,7 @@ def files_under_click(x, y) -> list[str]:
     if not _finder_frontmost():
         return []
     r = subprocess.run(["osascript", "-e", SCRIPT], capture_output=True, text=True, timeout=5)
-    paths = [p for p in r.stdout.splitlines() if p and not p.endswith("/")]
-    return [p for p in paths if os.path.isfile(p)]
+    paths = [p.rstrip("/") or "/" for p in r.stdout.splitlines() if p]
+    # файлы и папки (кроме корня и дисков в /Volumes)
+    return [p for p in paths
+            if os.path.isfile(p) or (os.path.isdir(p) and p != "/" and os.path.dirname(p) != "/Volumes")]

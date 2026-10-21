@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import Callable
 
-from .converters import image, media, office, pdf, sheet, text
+from .converters import archive, folder, image, media, office, pdf, sheet, text
 from .converters.common import ConversionError, Ctx
 from .platform_utils import find_soffice
 
@@ -102,7 +102,44 @@ def norm_ext(path: Path) -> str:
     return ALIASES.get(e, e)
 
 
+def _folder_targets(path: Path) -> list[Target]:
+    out = [
+        Target("zip", "ZIP", "Архив", "#9AA5B1", archive.to_zip),
+        Target("7z", "7Z", "Сильное сжатие", "#9AA5B1", archive.to_7z),
+        Target("tar.gz", "TAR.GZ", "Архив Unix", "#9AA5B1", archive.to_targz),
+    ]
+    imgs = folder.top_files(path, folder.IMAGE_EXT)
+    if imgs:
+        out.append(Target("imgpdf", "PDF", "Картинки в один", "#FF5A5F", folder.images_to_pdf))
+    if folder.top_files(path, folder.DOC_EXT):
+        out.append(Target("docpdf", "PDF", "Документы → PDF", "#FF5A5F", folder.docs_to_pdf))
+    if any(f.suffix.lower() not in (".jpg", ".jpeg") for f in imgs):
+        out.append(Target("jpgall", "JPG", "Фото → JPG", "#FFB547", folder.photos_to_jpg))
+    if imgs:
+        out.append(Target("shrink", "СЖАТЬ", "Фото для отправки", "#3DDC97", folder.compress_photos))
+    out.append(Target("list", "TXT", "Список файлов", "#B8C2CC", folder.file_list))
+    return out[:8]
+
+
+def _archive_targets(path: Path) -> list[Target]:
+    kind = archive.archive_kind(path)
+    out = [Target("extract", "ПАПКА", "Распаковать", "#3DDC97", archive.extract)]
+    for key, label, hint in (("zip", "ZIP", "Перепаковать"), ("7z", "7Z", "Сильное сжатие"),
+                             ("tar.gz", "TAR.GZ", "Архив Unix")):
+        if kind in ((".tar.gz", ".tgz") if key == "tar.gz" else (f".{key}",)):
+            continue
+        out.append(Target(key, label, hint, "#9AA5B1", partial(archive.repack, fmt=key)))
+    return out
+
+
 def targets_for(path: Path) -> list[Target]:
+    if path.is_dir():
+        if path.parent == path:        # корень диска — не предлагаем архивировать весь диск
+            return []
+        return _folder_targets(path)
+    if archive.archive_kind(path):
+        return _archive_targets(path)
+
     e = norm_ext(path)
     raw = path.suffix.lower().lstrip(".")
     out: list[Target] = []

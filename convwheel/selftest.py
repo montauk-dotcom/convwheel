@@ -10,17 +10,34 @@ import tempfile
 from pathlib import Path
 
 
+def _report(text: str) -> None:
+    """В оконной сборке Windows нет консоли (sys.stdout = None) — пишем ещё и в файл."""
+    import os
+    log = os.environ.get("CONVWHEEL_SELFTEST_LOG")
+    if log:
+        with open(log, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+    if sys.stdout is not None:
+        try:
+            print(text)
+        except Exception:
+            pass
+
+
 def main() -> int:
     errors = []
     mods = ("pynput.mouse",) if sys.platform in ("darwin", "win32") else ()  # на Linux нужен X-сервер
     for mod in (*mods, "PySide6.QtWidgets", "pymupdf", "pdf2docx", "docx", "openpyxl",
-                "PIL.Image", "markdown"):
+                "PIL.Image", "markdown", "py7zr"):
         try:
             __import__(mod)
         except Exception as e:
             errors.append(f"import {mod}: {e}")
-    if sys.platform == "darwin":
-        for mod in ("AppKit", "Quartz", "ApplicationServices"):
+    platform_mods = {"darwin": ("AppKit", "Quartz", "ApplicationServices"),
+                     "win32": ("win32com.client", "pythoncom", "comtypes.client",
+                               "comtypes.gen.UIAutomationClient")}.get(sys.platform, ())
+    if platform_mods:
+        for mod in platform_mods:
             try:
                 __import__(mod)
             except Exception as e:
@@ -46,11 +63,18 @@ def main() -> int:
             run_job([txt], {t.key: t for t in targets_for(txt)}["docx"])
             import pymupdf
             assert pymupdf.open(pdf).page_count == 1
+            # папка → 7Z → распаковка
+            folder = Path(d) / "папка"
+            folder.mkdir()
+            (folder / "a.txt").write_text("x", encoding="utf-8")
+            arch = run_job([folder], {t.key: t for t in targets_for(folder)}["7z"])[0]
+            back = run_job([arch], {t.key: t for t in targets_for(arch)}["extract"])[0]
+            assert (back / "a.txt").exists()
     except Exception as e:
         errors.append(f"конвертация: {e}")
 
     if errors:
-        print("SELFTEST FAILED:\n  " + "\n  ".join(errors))
+        _report("SELFTEST FAILED:\n  " + "\n  ".join(errors))
         return 1
-    print("SELFTEST OK")
+    _report("SELFTEST OK")
     return 0

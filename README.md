@@ -18,8 +18,18 @@
 | PNG, JPG, WEBP, GIF, BMP, TIFF, HEIC, ICO | PNG, JPG, WEBP, PDF, ICO, GIF, BMP, TIFF | Pillow |
 | MP4, MOV, MKV, AVI, WEBM… | MP4, MP3, GIF, WEBM, MOV, WAV | ffmpeg (идёт в комплекте) |
 | MP3, WAV, FLAC, OGG, M4A… | MP3, WAV, FLAC, OGG, M4A | ffmpeg |
+| **Папка** | ZIP, 7Z, TAR.GZ · картинки → один PDF · документы → PDF · фото → JPG · сжать фото для отправки · список файлов | zipfile, py7zr, tarfile, Pillow, LibreOffice |
+| **Архив** ZIP, 7Z, TAR.GZ | Распаковать · перепаковать в другой формат | zipfile, py7zr, tarfile |
 
-Несколько выделенных картинок → дополнительно «PDF · Один файл».
+Несколько выделенных картинок → дополнительно «PDF · Один файл». Для папки показываются
+только действия, подходящие её содержимому (нет картинок — нет «картинки → PDF»).
+Распаковка защищена от вредных архивов с путями вида `../../`; имена из Windows-архивов
+(CP866) не превращаются в кракозябры.
+
+## Оформление
+По умолчанию — **«Цитрус»**: серая однотонная долька в разрезе (корка, белая мякоть,
+скруглённые дольки с волокнами). В меню значка → «Оформление» можно вернуть
+**«Классику»** — тёмное колесо с цветными секторами.
 
 ### Чтобы конвертация была правильной
 - Прозрачный PNG → JPG/PDF получает белый фон, а не чёрный; фото с телефона не поворачиваются (EXIF).
@@ -52,16 +62,24 @@ python main.py
 раздел настроек, статус обновляется сам, после выдачи приложение перезапускается.
 Открыть окно снова: значок в строке меню → «Разрешения macOS…».
 
-## Готовый DMG для macOS без Терминала (GitHub Actions)
+## Готовые сборки без Терминала (GitHub Actions)
 
-В проекте есть `.github/workflows/build-macos.yml`: GitHub сам собирает `ConvWheel.dmg` на
-своих Mac-серверах — для Apple Silicon (arm64) и Intel (x86_64).
+В проекте есть `.github/workflows/build.yml`: при каждой загрузке изменений GitHub сам собирает
+- **macOS**: `ConvWheel-<версия>-arm64.dmg` (M1–M4) и `…-x86_64.dmg` (Intel);
+- **Windows**: установщик `ConvWheel-Setup-<версия>.exe` (без прав администратора, с автозапуском)
+  и `ConvWheel-<версия>-windows-portable.zip`.
+
+Каждая сборка перед выкладкой запускает готовое приложение в режиме самопроверки.
+
+Windows без платной подписи кода покажет «Windows защитила ваш компьютер» →
+«Подробнее» → «Выполнить в любом случае». Это один раз.
 
 1. Создайте репозиторий на github.com (можно приватный).
 2. «uploading an existing file» → перетащите **всё содержимое** папки `convwheel`.
    В Finder нажмите `Cmd + Shift + .`, чтобы увидеть скрытую папку `.github`, — её тоже нужно перетащить.
-3. Вкладка **Actions** → «Сборка для macOS» → через ~10 минут внизу появятся
-   `ConvWheel-macOS-arm64` и `ConvWheel-macOS-x86_64` — скачайте нужный.
+3. Вкладка **Actions** → «Сборка» → через ~15 минут внизу появятся
+   `ConvWheel-macOS-arm64`, `ConvWheel-macOS-x86_64`, `ConvWheel-Windows-Setup`,
+   `ConvWheel-Windows-Portable` — скачайте нужное.
 4. Чтобы DMG публиковался на странице Releases, создайте релиз с тегом вида `v1.0.0`.
 
 Без сертификата Apple Developer ($99/год) macOS при первом открытии скажет, что не может
@@ -73,7 +91,7 @@ python main.py
 
 ## Сборка вручную
 
-- Windows: `build_windows.bat` → `dist\ConvWheel\ConvWheel.exe`
+- Windows: `build_windows.bat` → `dist\ConvWheel-Setup-<версия>.exe` и portable-архив
 - macOS: `./build_macos.sh` → `dist/ConvWheel-<версия>-<arch>.dmg`
 
 Собирать нужно на той системе, для которой сборка.
@@ -107,9 +125,12 @@ convwheel/wheel.py          радиальное меню и анимации
 convwheel/trigger/          перехват клика: windows.py, macos.py
 convwheel/formats.py        какие варианты показывать для какого файла
 convwheel/engine.py         выполнение: временная папка → проверка → перенос
-convwheel/converters/       office, pdf, image, media, text, sheet
+convwheel/converters/       office, pdf, image, media, text, sheet, archive, folder
+convwheel/mac_permissions.py окно разрешений macOS при первом запуске
+packaging/                  установщик Windows (Inno Setup), entitlements macOS
+tools/make_icon.py          иконка приложения
 tests/                      make_fixtures.py, test_convert.py, render_preview.py
 ```
 
 Отладка без клика: `python main.py --file путь/к/файлу.docx`.
-Тесты конвертации: `python tests/make_fixtures.py && python tests/test_convert.py`.
+Тесты: `python tests/make_fixtures.py && python tests/test_convert.py && python tests/test_folders.py`.

@@ -21,7 +21,12 @@ def unique_path(p: Path) -> Path:
     """report.pdf → report (1).pdf, если такой уже есть. Ничего не перезаписываем."""
     if not p.exists():
         return p
-    stem, suf = (p.name, "") if p.is_dir() else (p.stem, p.suffix)
+    if p.is_dir():
+        stem, suf = p.name, ""
+    elif p.name.lower().endswith(".tar.gz"):      # архив.tar (1).gz → архив (1).tar.gz
+        stem, suf = p.name[:-7], p.name[-7:]
+    else:
+        stem, suf = p.stem, p.suffix
     i = 1
     while True:
         cand = p.with_name(f"{stem} ({i}){suf}")
@@ -52,7 +57,7 @@ def run_job(files: list[Path], target: Target,
     """Конвертирует файлы; бросает ConversionError с понятным текстом при неудаче."""
     files = [Path(f) for f in files]
     for f in files:
-        if not f.is_file():
+        if not (f.is_file() or f.is_dir()):
             raise ConversionError(f"Файл не найден: {f.name}")
 
     outputs: list[Path] = []

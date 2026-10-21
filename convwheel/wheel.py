@@ -11,9 +11,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QKeyEvent,
+                           QPainterPathStroker, QPolygonF,
                            QMouseEvent, QPainter, QPainterPath, QPen, QRadialGradient)
 from PySide6.QtWidgets import QWidget
 
+import random
+from dataclasses import dataclass
+
+from .config import CONFIG
 from .engine import ConvertJob
 from .formats import Target
 from .platform_utils import IS_MAC, IS_WIN, human_size, reveal_in_file_manager
@@ -23,6 +28,57 @@ R_OUT = 180.0
 R_IN = 76.0
 GAP_DEG = 1.6
 ACCENT = QColor("#3BB6FF")
+
+# «Цитрус»: корка R_OUT..CIT_PITH, мякоть, дольки CIT_RI..CIT_RO
+CIT_PITH = 166.0
+CIT_RO = 160.0
+CIT_RI = R_IN + 2
+CIT_GAP = 7.0
+CIT_ROUND = 9.0
+
+
+@dataclass(frozen=True)
+class Palette:
+    citrus: bool
+    center0: QColor
+    center1: QColor
+    border: QColor
+    text: QColor
+    text_sub: QColor
+    text_muted: QColor
+    pill: QColor
+    pill_text: QColor
+    doc: QColor
+    doc_edge: QColor
+    doc_fold: QColor
+    doc_text: QColor
+    folder_back: QColor
+    folder_front: QColor
+    accent: QColor
+    track: QColor
+    ok: QColor
+    err: QColor
+    link: QColor
+
+
+Q = QColor
+PALETTES = {
+    "citrus": Palette(True, Q("#F7F7F5"), Q("#E2E2DF"), Q(0, 0, 0, 40), Q("#2A2A29"), Q("#5C5C5A"),
+                      Q("#80807E"), Q("#4D4D4B"), Q("#FFFFFF"), Q("#FFFFFF"), Q("#BDBDBB"), Q("#C9C9C7"),
+                      Q("#5C5C5A"), Q("#8F8F8D"), Q("#B3B3B1"), Q("#4D4D4B"), Q(0, 0, 0, 28),
+                      Q("#4D4D4B"), Q("#2A2A29"), Q("#3A3A39")),
+    "classic": Palette(False, Q(36, 44, 60, 250), Q(18, 22, 32, 250), Q(120, 205, 255, 90),
+                       Q("#FFFFFF"), Q(190, 200, 215), Q(150, 160, 178), Q(37, 120, 220), Q("#FFFFFF"),
+                       Q(236, 240, 246), Q(236, 240, 246), Q(190, 198, 210), Q(90, 100, 118),
+                       Q("#3D7BD9"), Q("#5B9BF0"), ACCENT, Q(255, 255, 255, 25),
+                       Q("#34D399"), Q("#FF5A5F"), Q(140, 200, 255)),
+}
+
+
+def _mix(a: QColor, b: QColor, t: float) -> QColor:
+    t = max(0.0, min(1.0, t))
+    return QColor(int(a.red() + (b.red() - a.red()) * t), int(a.green() + (b.green() - a.green()) * t),
+                  int(a.blue() + (b.blue() - a.blue()) * t), int(a.alpha() + (b.alpha() - a.alpha()) * t))
 
 
 def ease_out_back(t: float, s: float = 1.45) -> float:
@@ -57,6 +113,13 @@ class ConvertWheel(QWidget):
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.resize(SIZE, SIZE)
+        self.pal = PALETTES.get(CONFIG.theme, PALETTES["citrus"])
+        self._describe()
+        rnd = random.Random(7)        # фиксированное зерно — текстура не «мигает» между кадрами
+        self._pores = [(rnd.uniform(0, 2 * math.pi), rnd.uniform(CIT_PITH + 3, R_OUT - 3),
+                        rnd.uniform(0.6, 1.4), rnd.choice((-28, -18, 40, 60))) for _ in range(150)]
+        self._vesicles = [[(rnd.random(), rnd.uniform(-1, 1), rnd.uniform(5, 13), rnd.randint(60, 130),
+                            rnd.uniform(0.9, 1.7)) for _ in range(22)] for _ in range(self.n)]
 
         # --- состояние анимации
         self.state = self.CHOOSE
@@ -87,6 +150,32 @@ class ConvertWheel(QWidget):
         self.autoclose = QTimer(self)
         self.autoclose.setSingleShot(True)
         self.autoclose.timeout.connect(self.dismiss)
+
+    def _describe(self):
+        """Подписи в центре считаются один раз (обход большой папки — не на каждом кадре)."""
+        from .converters.archive import archive_kind
+        from .converters.folder import folder_summary
+        f0 = self.files[0]
+        many = len(self.files) > 1
+        if f0.is_dir():
+            self.kind = "folder"
+            n, size, cut = folder_summary(f0) if not many else (0, 0, False)
+            self.title = f"{len(self.files)} папки" if many else f0.name
+            self.subtitle = (f"{n}{'+' if cut else ''} файлов • {human_size(size)}" if not many
+                             else "Несколько папок")
+            self.question = "Выберите действие"
+            self.ext_label = ""
+            return
+        self.kind = "archive" if archive_kind(f0) else "file"
+        k = archive_kind(f0)
+        self.ext_label = (k.lstrip(".").upper() if k else f0.suffix.lstrip(".").upper())[:6] or "FILE"
+        try:
+            size = sum(f.stat().st_size for f in self.files)
+        except OSError:
+            size = 0
+        self.title = f"{len(self.files)} файл(а)" if many else f0.name
+        self.subtitle = human_size(size) if many else f"{human_size(size)} • {self.ext_label}"
+        self.question = "Выберите действие" if self.kind == "archive" else "Выберите формат"
 
     # ------------------------------------------------------------------ показ
     def popup_at(self, pos=None):
@@ -279,19 +368,20 @@ class ConvertWheel(QWidget):
         p.rotate(-14 * (1 - appear))           # лёгкое «докручивание» при появлении
         p.translate(-self.c)
 
-        self._paint_base(p)
+        citrus = self.pal.citrus
+        (self._paint_base_citrus if citrus else self._paint_base)(p)
         for i, t in enumerate(self.targets):
             # каскад: каждый следующий сектор появляется чуть позже
             local = max(0.0, min(1.0, (op * 1.5) - i * 0.05)) if self.closing_from is None else 1.0
-            self._paint_segment(p, i, t, local)
+            (self._paint_segment_citrus if citrus else self._paint_segment)(p, i, t, local)
         self._paint_highlight_ring(p)
         self._paint_center(p)
         p.end()
 
+    # ================================================================ «Классика»
     def _paint_base(self, p: QPainter):
         c = self.c
-        # мягкое свечение
-        for k, a in ((22, 18), (14, 28), (7, 45)):
+        for k, a in ((22, 18), (14, 28), (7, 45)):    # мягкое свечение
             p.setPen(QPen(QColor(59, 182, 255, a), k))
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(c, R_OUT + 2, R_OUT + 2)
@@ -308,8 +398,7 @@ class ConvertWheel(QWidget):
         half = (self.step - GAP_DEG) / 2
         a0, sweep = mid + half, -(2 * half)
         c = self.c
-        # «выдвигаем» сектор наружу при наведении
-        off = grow * 7
+        off = grow * 7                       # «выдвигаем» сектор наружу при наведении
         cx = c.x() + off * math.cos(math.radians(mid))
         cy = c.y() - off * math.sin(math.radians(mid))
         ro, ri = r_out + grow * 4, r_in
@@ -320,17 +409,18 @@ class ConvertWheel(QWidget):
         path.closeSubpath()
         return path
 
+    def _segment_alpha(self, t: Target) -> float:
+        chosen = self.state != self.CHOOSE and self.chosen is t
+        return 1 - self.dim * (0.0 if chosen else 0.6)
+
     def _paint_segment(self, p: QPainter, i: int, t: Target, appear: float):
         h = self.hover_amt[i]
-        chosen = self.state != self.CHOOSE and self.chosen is t
-        dim = self.dim * (0.0 if chosen else 0.65)
         col = QColor(t.color)
         p.save()
-        p.setOpacity(p.opacity() * appear * (1 - dim))
+        p.setOpacity(p.opacity() * appear * self._segment_alpha(t))
 
         path = self._segment_path(i, R_IN + 6, R_OUT - 6, h)
-        base = QColor(255, 255, 255, int(10 + 12 * h))
-        p.setBrush(base)
+        p.setBrush(QColor(255, 255, 255, int(10 + 12 * h)))
         p.setPen(QPen(QColor(255, 255, 255, int(22 + 40 * h)), 1))
         p.drawPath(path)
         if h > 0.01:
@@ -346,17 +436,10 @@ class ConvertWheel(QWidget):
             p.setPen(QPen(QColor(col.red(), col.green(), col.blue(), int(200 * h)), 1.4))
             p.drawPath(path)
 
-        # подпись: бейдж формата + маленький текст
-        mid = math.radians(self.seg_center_angle(i))
-        rr = (R_IN + R_OUT) / 2 + 4 + h * 5
-        pos = QPointF(self.c.x() + rr * math.cos(mid), self.c.y() - rr * math.sin(mid))
-        lift = 3 * h
-        f = QFont(self.font())
-        f.setPixelSize(20 if len(t.label) <= 4 else 15)
-        f.setWeight(QFont.Bold)
+        pos, lift = self._label_pos(i, (R_IN + R_OUT) / 2 + 4, h)
+        f = self._label_font(t)
         p.setFont(f)
-        fm = QFontMetrics(f)
-        w = fm.horizontalAdvance(t.label) + 18
+        w = QFontMetrics(f).horizontalAdvance(t.label) + 18
         badge = QRectF(pos.x() - w / 2, pos.y() - 22 - lift, w, 30)
         bc = QColor(col); bc.setAlpha(int(55 + 120 * h))
         p.setBrush(bc)
@@ -364,28 +447,166 @@ class ConvertWheel(QWidget):
         p.drawRoundedRect(badge, 8, 8)
         p.setPen(QColor(255, 255, 255))
         p.drawText(badge, Qt.AlignCenter, t.label)
-
-        f2 = QFont(self.font())
-        f2.setPixelSize(11)
-        p.setFont(f2)
-        p.setPen(QColor(220, 228, 240, int(150 + 100 * h)))
-        p.drawText(QRectF(pos.x() - 60, pos.y() + 11 - lift, 120, 16), Qt.AlignCenter, t.hint)
+        self._paint_hint(p, t, pos, lift, QColor(220, 228, 240, int(150 + 100 * h)))
         p.restore()
 
+    # ================================================================ «Цитрус»
+    def _paint_base_citrus(self, p: QPainter):
+        c = self.c
+        # тень под «долькой» — читается на любых обоях
+        sh = QRadialGradient(QPointF(c.x(), c.y() + 8), R_OUT + 18)
+        sh.setColorAt(0.86, QColor(0, 0, 0, 70))
+        sh.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(sh)
+        p.drawEllipse(QPointF(c.x(), c.y() + 8), R_OUT + 18, R_OUT + 18)
+        # корка
+        g = QRadialGradient(c, R_OUT)
+        g.setColorAt(CIT_PITH / R_OUT, QColor("#B9B9B7"))
+        g.setColorAt(0.97, QColor("#8E8E8C"))
+        g.setColorAt(1.0, QColor("#777775"))
+        p.setBrush(g)
+        p.setPen(QPen(QColor("#6A6A68"), 1.6))
+        p.drawEllipse(c, R_OUT, R_OUT)
+        # поры на корке
+        p.setPen(Qt.NoPen)
+        for ang, rr, s, a in self._pores:
+            p.setBrush(QColor(255, 255, 255, a) if a > 0 else QColor(0, 0, 0, -a))
+            p.drawEllipse(QPointF(c.x() + rr * math.cos(ang), c.y() - rr * math.sin(ang)), s, s)
+        # белая мякоть (альбедо) — видна в щелях между дольками
+        g2 = QRadialGradient(c, CIT_PITH)
+        g2.setColorAt(0.0, QColor("#F4F4F2"))
+        g2.setColorAt(0.92, QColor("#E6E6E3"))
+        g2.setColorAt(1.0, QColor("#D4D4D1"))
+        p.setBrush(g2)
+        p.setPen(QPen(QColor(0, 0, 0, 25), 1))
+        p.drawEllipse(c, CIT_PITH, CIT_PITH)
+
+    def _citrus_wedge(self, i: int, grow: float) -> tuple[QPainterPath, QPointF]:
+        """Долька со скруглёнными углами: многоугольник, «раздутый» круглой обводкой."""
+        mid = self.seg_center_angle(i)
+        off = grow * 6
+        cx = self.c.x() + off * math.cos(math.radians(mid))
+        cy = self.c.y() - off * math.sin(math.radians(mid))
+        r, gap = CIT_ROUND, CIT_GAP / 2
+        ri, ro = CIT_RI + r, CIT_RO + grow * 3 - r
+        half = self.step / 2
+        ho = half - math.degrees((gap + r) / ro)
+        hi = max(0.8, half - math.degrees((gap + r) / ri))
+
+        def pt(rad, a):
+            return QPointF(cx + rad * math.cos(math.radians(a)), cy - rad * math.sin(math.radians(a)))
+
+        n = max(8, int(self.step / 2))
+        pts = [pt(ro, mid + ho - 2 * ho * k / n) for k in range(n + 1)]
+        m = max(3, n // 3)
+        pts += [pt(ri, mid - hi + 2 * hi * k / m) for k in range(m + 1)]
+        poly = QPainterPath()
+        poly.addPolygon(QPolygonF(pts))
+        poly.closeSubpath()
+        st = QPainterPathStroker()
+        st.setWidth(2 * r)
+        st.setJoinStyle(Qt.RoundJoin)
+        st.setCapStyle(Qt.RoundCap)
+        return st.createStroke(poly).united(poly).simplified(), QPointF(cx, cy)
+
+    def _paint_segment_citrus(self, p: QPainter, i: int, t: Target, appear: float):
+        h = self.hover_amt[i]
+        p.save()
+        p.setOpacity(p.opacity() * appear * self._segment_alpha(t))
+        path, wc = self._citrus_wedge(i, h)
+        mid = math.radians(self.seg_center_angle(i))
+
+        if h > 0.01:   # «приподнятая» долька отбрасывает тень
+            p.save()
+            p.translate(0, 4 * h)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, int(60 * h)))
+            p.drawPath(path)
+            p.restore()
+
+        g = QRadialGradient(wc, CIT_RO + 6)
+        inner = _mix(QColor("#9C9C9A"), QColor("#D2D2D0"), h)
+        outer = _mix(QColor("#B4B4B2"), QColor("#F0F0EE"), h)
+        g.setColorAt(CIT_RI / CIT_RO, inner)
+        g.setColorAt(1.0, outer)
+        p.setBrush(g)
+        p.setPen(QPen(_mix(QColor("#8A8A88"), QColor("#FFFFFF"), h), 1.4 + 0.8 * h))
+        p.drawPath(path)
+
+        # «сочные» волокна внутри дольки
+        p.save()
+        p.setClipPath(path)
+        for fr, fa, ln, a, w in self._vesicles[i]:
+            rad = CIT_RI + 10 + fr * (CIT_RO - CIT_RI - 18)
+            ang = mid + fa * math.radians(self.step / 2 - 3) * (0.35 + 0.65 * fr)
+            x, y = wc.x() + rad * math.cos(ang), wc.y() - rad * math.sin(ang)
+            dx, dy = math.cos(ang) * ln / 2, -math.sin(ang) * ln / 2
+            pen = QPen(QColor(255, 255, 255, int(a * (0.75 + 0.25 * h))), w)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(x - dx, y - dy), QPointF(x + dx, y + dy))
+        # блик по внешнему краю
+        hl = QRadialGradient(wc, CIT_RO)
+        hl.setColorAt(0.80, QColor(255, 255, 255, 0))
+        hl.setColorAt(0.97, QColor(255, 255, 255, int(55 + 50 * h)))
+        hl.setColorAt(1.0, QColor(255, 255, 255, 0))
+        p.fillPath(path, hl)
+        p.restore()
+
+        pos, lift = self._label_pos(i, (CIT_RI + CIT_RO) / 2 + 6, h)
+        f = self._label_font(t)
+        p.setFont(f)
+        box = QRectF(pos.x() - 70, pos.y() - 24 - lift, 140, 30)
+        p.setPen(QColor(255, 255, 255, 110))              # светлая «подложка» для чёткости
+        p.drawText(box.translated(0, 1), Qt.AlignCenter, t.label)
+        p.setPen(_mix(QColor("#2E2E2D"), QColor("#161616"), h))
+        p.drawText(box, Qt.AlignCenter, t.label)
+        self._paint_hint(p, t, pos, lift, _mix(QColor("#4A4A48"), QColor("#2E2E2D"), h))
+        p.restore()
+
+    # ================================================================ общее
+    def _label_pos(self, i: int, rr: float, h: float) -> tuple[QPointF, float]:
+        mid = math.radians(self.seg_center_angle(i))
+        rr += h * 5
+        return QPointF(self.c.x() + rr * math.cos(mid), self.c.y() - rr * math.sin(mid)), 3 * h
+
+    def _label_font(self, t: Target) -> QFont:
+        f = QFont(self.font())
+        f.setPixelSize(20 if len(t.label) <= 4 else 15)
+        f.setWeight(QFont.Bold)
+        return f
+
+    def _paint_hint(self, p: QPainter, t: Target, pos: QPointF, lift: float, col: QColor):
+        f2 = QFont(self.font())
+        f2.setPixelSize(11)
+        if self.pal.citrus:
+            f2.setWeight(QFont.Medium)
+            f2.setPixelSize(10 if len(t.hint) > 14 else 11)
+        p.setFont(f2)
+        p.setPen(col)
+        p.drawText(QRectF(pos.x() - 62, pos.y() + 11 - lift, 124, 16), Qt.AlignCenter, t.hint)
+
     def _paint_highlight_ring(self, p: QPainter):
-        """Дуга-«бегунок» на внешнем кольце, плавно перетекающая к сектору под курсором."""
+        """Дуга-«бегунок» по краю, плавно перетекающая к сектору под курсором."""
         if self.hl_angle is None:
             return
         amt = max(self.hover_amt) if self.hover_amt else 0
         if amt < 0.01:
             return
-        col = QColor(self.targets[self.hover].color if self.hover >= 0 else ACCENT)
-        col.setAlpha(int(255 * amt))
-        r = R_OUT
+        if self.pal.citrus:
+            col = QColor(255, 255, 255, int(200 * amt))
+            r = (R_OUT + CIT_PITH) / 2
+            layers = ((9, 0.22), (4, 1.0))
+        else:
+            col = QColor(self.targets[self.hover].color if self.hover >= 0 else ACCENT)
+            col.setAlpha(int(255 * amt))
+            r = R_OUT
+            layers = ((10, 0.25), (4, 1.0))
         rect = QRectF(self.c.x() - r, self.c.y() - r, 2 * r, 2 * r)
-        span = self.step - GAP_DEG * 2
+        span = self.step - GAP_DEG * 2 - (6 if self.pal.citrus else 0)
         p.save()
-        for width, alpha in ((10, 0.25), (4, 1.0)):
+        for width, alpha in layers:
             c = QColor(col); c.setAlphaF(col.alphaF() * alpha)
             pen = QPen(c, width)
             pen.setCapStyle(Qt.RoundCap)
@@ -394,13 +615,15 @@ class ConvertWheel(QWidget):
         p.restore()
 
     def _paint_center(self, p: QPainter):
-        c = self.c
+        c, pal = self.c, self.pal
         r = R_IN - 2 + 3 * self.center_hover
         g = QRadialGradient(c, r)
-        g.setColorAt(0, QColor(36, 44, 60, 250))
-        g.setColorAt(1, QColor(18, 22, 32, 250))
+        g.setColorAt(0, pal.center0)
+        g.setColorAt(1, pal.center1)
         p.setBrush(g)
-        p.setPen(QPen(QColor(120, 205, 255, 90 + int(100 * self.center_hover)), 1.4))
+        border = QColor(pal.border)
+        border.setAlpha(min(255, border.alpha() + int(90 * self.center_hover)))
+        p.setPen(QPen(border, 1.4))
         p.drawEllipse(c, r, r)
 
         if self.state == self.CHOOSE:
@@ -411,67 +634,72 @@ class ConvertWheel(QWidget):
             self._paint_result(p)
 
     def _paint_file_info(self, p: QPainter):
-        c = self.c
-        f0 = self.files[0]
-        ext = f0.suffix.lstrip(".").upper()[:5] or "FILE"
-        # иконка документа с загнутым уголком
-        w, h, fold = 34, 42, 10
-        x, y = c.x() - w / 2, c.y() - 50
-        doc = QPainterPath()
-        doc.moveTo(x, y)
-        doc.lineTo(x + w - fold, y)
-        doc.lineTo(x + w, y + fold)
-        doc.lineTo(x + w, y + h)
-        doc.lineTo(x, y + h)
-        doc.closeSubpath()
-        p.setBrush(QColor(236, 240, 246))
-        p.setPen(Qt.NoPen)
-        p.drawPath(doc)
-        p.setBrush(QColor(190, 198, 210))
-        tri = QPainterPath()
-        tri.moveTo(x + w - fold, y)
-        tri.lineTo(x + w - fold, y + fold)
-        tri.lineTo(x + w, y + fold)
-        tri.closeSubpath()
-        p.drawPath(tri)
-        f = QFont(self.font()); f.setPixelSize(9); f.setWeight(QFont.Bold)
-        p.setFont(f)
-        p.setPen(QColor(90, 100, 118))
-        p.drawText(QRectF(x, y + h - 16, w, 14), Qt.AlignCenter, ext)
+        c, pal = self.c, self.pal
+        icon_top = c.y() - 50
+        if self.kind == "folder":
+            self._paint_folder_icon(p, QRectF(c.x() - 22, icon_top + 4, 44, 36))
+        else:
+            ext = self.ext_label
+            w, h, fold = 34, 42, 10
+            x, y = c.x() - w / 2, icon_top
+            doc = QPainterPath()
+            doc.moveTo(x, y)
+            doc.lineTo(x + w - fold, y)
+            doc.lineTo(x + w, y + fold)
+            doc.lineTo(x + w, y + h)
+            doc.lineTo(x, y + h)
+            doc.closeSubpath()
+            p.setBrush(pal.doc)
+            p.setPen(QPen(pal.doc_edge, 1) if pal.citrus else Qt.NoPen)
+            p.drawPath(doc)
+            p.setBrush(pal.doc_fold)
+            tri = QPainterPath()
+            tri.moveTo(x + w - fold, y)
+            tri.lineTo(x + w - fold, y + fold)
+            tri.lineTo(x + w, y + fold)
+            tri.closeSubpath()
+            p.drawPath(tri)
+            f = QFont(self.font()); f.setPixelSize(9); f.setWeight(QFont.Bold)
+            p.setFont(f)
+            p.setPen(pal.doc_text)
+            p.drawText(QRectF(x - 4, y + h - 16, w + 8, 14), Qt.AlignCenter, ext)
 
-        # имя файла и размер
-        many = len(self.files) > 1
-        name = f"{len(self.files)} файл(а)" if many else f0.name
         f = QFont(self.font()); f.setPixelSize(12); f.setWeight(QFont.DemiBold)
         p.setFont(f)
         fm = QFontMetrics(f)
-        name = fm.elidedText(name, Qt.ElideMiddle, int(2 * R_IN - 26))
+        name = fm.elidedText(self.title, Qt.ElideMiddle, int(2 * R_IN - 26))
         tw = fm.horizontalAdvance(name) + 12
         pill = QRectF(c.x() - tw / 2, c.y() + 0, tw, 19)
-        p.setBrush(QColor(37, 120, 220))
+        p.setBrush(pal.pill)
         p.setPen(Qt.NoPen)
         p.drawRoundedRect(pill, 5, 5)
-        p.setPen(QColor(255, 255, 255))
+        p.setPen(pal.pill_text)
         p.drawText(pill, Qt.AlignCenter, name)
-        try:
-            size = sum(f.stat().st_size for f in self.files)
-        except OSError:
-            size = 0
         f = QFont(self.font()); f.setPixelSize(10)
         p.setFont(f)
-        p.setPen(QColor(190, 200, 215))
-        sub = f"{human_size(size)} • {ext}" if not many else human_size(size)
-        p.drawText(QRectF(c.x() - 60, c.y() + 22, 120, 14), Qt.AlignCenter, sub)
-        p.setPen(QColor(150, 160, 178))
-        p.drawText(QRectF(c.x() - 70, c.y() + 37, 140, 14), Qt.AlignCenter, "Во что конвертировать?")
+        p.setPen(pal.text_sub)
+        p.drawText(QRectF(c.x() - 66, c.y() + 21, 132, 14), Qt.AlignCenter, self.subtitle)
+        p.setPen(pal.text_muted)
+        p.drawText(QRectF(c.x() - 60, c.y() + 34, 120, 14), Qt.AlignCenter, self.question)
+
+    def _paint_folder_icon(self, p: QPainter, r: QRectF):
+        pal = self.pal
+        tab = QPainterPath()
+        tab.addRoundedRect(QRectF(r.x(), r.y(), r.width() * 0.45, r.height() * 0.4), 4, 4)
+        p.setPen(Qt.NoPen)
+        p.setBrush(pal.folder_back)
+        p.drawPath(tab)
+        p.drawRoundedRect(QRectF(r.x(), r.y() + r.height() * 0.15, r.width(), r.height() * 0.85), 5, 5)
+        p.setBrush(pal.folder_front)
+        p.drawRoundedRect(QRectF(r.x(), r.y() + r.height() * 0.32, r.width(), r.height() * 0.68), 5, 5)
 
     def _paint_progress(self, p: QPainter):
-        c = self.c
+        c, pal = self.c, self.pal
         r = R_IN - 16
         rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
-        col = QColor(self.chosen.color if self.chosen else ACCENT)
+        col = pal.accent if pal.citrus else QColor(self.chosen.color if self.chosen else ACCENT)
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(255, 255, 255, 25), 5))
+        p.setPen(QPen(pal.track, 5))
         p.drawEllipse(rect)
         pen = QPen(col, 5)
         pen.setCapStyle(Qt.RoundCap)
@@ -485,21 +713,23 @@ class ConvertWheel(QWidget):
             label = f"{int(self.progress_shown * 100)}%"
         f = QFont(self.font()); f.setPixelSize(18); f.setWeight(QFont.Bold)
         p.setFont(f)
-        p.setPen(QColor(255, 255, 255))
+        p.setPen(pal.text)
         p.drawText(QRectF(c.x() - 50, c.y() - 16, 100, 22), Qt.AlignCenter, label)
         f = QFont(self.font()); f.setPixelSize(10)
         p.setFont(f)
-        p.setPen(QColor(190, 200, 215))
+        p.setPen(pal.text_sub)
         p.drawText(QRectF(c.x() - 50, c.y() + 6, 100, 14), Qt.AlignCenter, self.status_text)
 
     def _paint_result(self, p: QPainter):
-        c = self.c
+        c, pal = self.c, self.pal
         ok = self.state == self.DONE
-        col = QColor("#34D399") if ok else QColor("#FF5A5F")
+        col = pal.ok if ok else pal.err
         t = ease_out_cubic(self.result_t)
         rr = 20 * ease_out_back(min(1.0, self.result_t * 1.3))
         cy = c.y() - 22
-        p.setBrush(QColor(col.red(), col.green(), col.blue(), 50))
+        fill = QColor(col)
+        fill.setAlpha(255 if pal.citrus else 50)
+        p.setBrush(fill)
         p.setPen(QPen(col, 2))
         p.drawEllipse(QPointF(c.x(), cy), rr, rr)
         pen = QPen(QColor(255, 255, 255), 3.2)
@@ -508,10 +738,9 @@ class ConvertWheel(QWidget):
         p.setPen(pen)
         path = QPainterPath()
         if ok:   # галочка рисуется «пером»
-            pts = [QPointF(c.x() - 8, cy + 1), QPointF(c.x() - 2, cy + 7), QPointF(c.x() + 9, cy - 6)]
-            path.moveTo(pts[0])
-            path.lineTo(pts[1])
-            path.lineTo(pts[2])
+            path.moveTo(QPointF(c.x() - 8, cy + 1))
+            path.lineTo(QPointF(c.x() - 2, cy + 7))
+            path.lineTo(QPointF(c.x() + 9, cy - 6))
             p.drawPath(_partial(path, t))
         else:
             d = 6 * t
@@ -520,13 +749,15 @@ class ConvertWheel(QWidget):
 
         f = QFont(self.font()); f.setPixelSize(10)
         p.setFont(f)
-        p.setPen(QColor(230, 236, 245))
+        p.setPen(pal.text)
         box = QRectF(c.x() - R_IN + 12, c.y() + 2, 2 * R_IN - 24, 44)
         text = self.status_text if not ok else QFontMetrics(f).elidedText(
             self.status_text, Qt.ElideMiddle, int(box.width()))
         p.drawText(box, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, text)
         if ok:
-            p.setPen(QColor(140, 200, 255, int(160 + 95 * self.center_hover)))
+            link = QColor(pal.link)
+            link.setAlpha(int(170 + 85 * self.center_hover))
+            p.setPen(link)
             p.drawText(QRectF(c.x() - 60, c.y() + 30, 120, 14), Qt.AlignCenter, "Показать в папке")
 
 
