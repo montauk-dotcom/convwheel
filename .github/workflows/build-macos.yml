@@ -1,0 +1,77 @@
+# Автоматическая сборка ConvWheel для macOS.
+# Срабатывает при каждой загрузке изменений в main, вручную (кнопка «Run workflow»)
+# и при создании тега v1.0.1 и т.п. — тогда DMG ещё и публикуется в Releases.
+name: Сборка для macOS
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # нужно для публикации в Releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15         # Apple Silicon (M1–M4)
+            arch: arm64
+          - runner: macos-15-intel   # Mac на Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    name: macOS ${{ matrix.arch }}
+    env:
+      HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # Необязательно: подпись сертификатом Apple Developer ID.
+      # Если секреты не заданы — шаг пропускается и приложение подписывается ad-hoc.
+      - name: Импорт сертификата подписи
+        if: env.HAS_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import cert.p12 -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN"
+          rm cert.p12
+
+      - name: Сборка .app и .dmg
+        env:
+          CI: "1"
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          chmod +x build_macos.sh
+          ./build_macos.sh
+
+      - name: Сохранить DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConvWheel-macOS-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+
+      - name: Опубликовать в Releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg

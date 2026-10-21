@@ -1,1 +1,115 @@
-# convwheel
+# ConvWheel
+
+Фоновое приложение для Windows и macOS: **Shift + клик по файлу** в Проводнике/Finder или
+на рабочем столе — и вокруг курсора плавно раскрывается колесо с форматами, в которые этот
+файл можно сконвертировать. Выбрали сектор — в центре идёт прогресс, готовый файл
+появляется рядом с исходным. Клик по центру — показать результат в папке.
+
+## Что во что конвертируется
+
+| Исходный файл | Варианты | Чем |
+|---|---|---|
+| DOCX, DOC, ODT, RTF | PDF, TXT, DOCX, ODT, RTF, HTML, DOC | MS Word (Windows) или LibreOffice; DOCX→TXT — напрямую |
+| TXT, MD | PDF, DOCX, HTML, ODT, TXT (UTF-8 / без разметки) | python-docx, LibreOffice |
+| PDF | DOCX, TXT, PNG, JPG (каждая страница) | pdf2docx, PyMuPDF |
+| XLSX, XLS, ODS | PDF, CSV (каждый лист), XLSX, ODS | MS Excel или LibreOffice; запасной путь — openpyxl |
+| CSV | XLSX, PDF, ODS | openpyxl (сам определяет `,` / `;`), LibreOffice |
+| PPTX, PPT, ODP | PDF, PPTX, ODP | MS PowerPoint или LibreOffice |
+| PNG, JPG, WEBP, GIF, BMP, TIFF, HEIC, ICO | PNG, JPG, WEBP, PDF, ICO, GIF, BMP, TIFF | Pillow |
+| MP4, MOV, MKV, AVI, WEBM… | MP4, MP3, GIF, WEBM, MOV, WAV | ffmpeg (идёт в комплекте) |
+| MP3, WAV, FLAC, OGG, M4A… | MP3, WAV, FLAC, OGG, M4A | ffmpeg |
+
+Несколько выделенных картинок → дополнительно «PDF · Один файл».
+
+### Чтобы конвертация была правильной
+- Прозрачный PNG → JPG/PDF получает белый фон, а не чёрный; фото с телефона не поворачиваются (EXIF).
+- Текстовые файлы в CP1251/UTF-16 читаются корректно, результат всегда UTF-8 — без кракозябр.
+- PDF-скан без текстового слоя не превращается молча в пустой TXT/DOCX — будет понятное сообщение.
+- Существующие файлы никогда не перезаписываются: `Отчёт.pdf` → `Отчёт (1).pdf`.
+- Результат сначала собирается во временной папке, проверяется (существует, не пустой) и только потом переносится.
+- LibreOffice запускается с отдельным профилем, поэтому не мешает открытому у вас LibreOffice.
+- Видео в MP4 — H.264 + AAC + `faststart`: открывается везде, включая телефоны и Telegram.
+
+## Установка
+
+Нужен Python 3.10+.
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+Для офисных форматов нужен **LibreOffice** (бесплатно, libreoffice.org). На Windows вместо
+него можно использовать установленный Microsoft Office — он даёт самое точное PDF.
+Проверить, всё ли найдено: значок в трее → «Проверить компоненты».
+
+### Windows
+Ничего дополнительно разрешать не нужно. Автозапуск — в меню значка в трее.
+
+### macOS
+При первом запуске откроется окно «Почти готово» с тремя разрешениями
+(Универсальный доступ, Мониторинг ввода, доступ к Finder). Кнопки сразу открывают нужный
+раздел настроек, статус обновляется сам, после выдачи приложение перезапускается.
+Открыть окно снова: значок в строке меню → «Разрешения macOS…».
+
+## Готовый DMG для macOS без Терминала (GitHub Actions)
+
+В проекте есть `.github/workflows/build-macos.yml`: GitHub сам собирает `ConvWheel.dmg` на
+своих Mac-серверах — для Apple Silicon (arm64) и Intel (x86_64).
+
+1. Создайте репозиторий на github.com (можно приватный).
+2. «uploading an existing file» → перетащите **всё содержимое** папки `convwheel`.
+   В Finder нажмите `Cmd + Shift + .`, чтобы увидеть скрытую папку `.github`, — её тоже нужно перетащить.
+3. Вкладка **Actions** → «Сборка для macOS» → через ~10 минут внизу появятся
+   `ConvWheel-macOS-arm64` и `ConvWheel-macOS-x86_64` — скачайте нужный.
+4. Чтобы DMG публиковался на странице Releases, создайте релиз с тегом вида `v1.0.0`.
+
+Без сертификата Apple Developer ($99/год) macOS при первом открытии скажет, что не может
+проверить разработчика: «Системные настройки → Конфиденциальность и безопасность →
+Всё равно открыть». Это один раз. С сертификатом добавьте секреты репозитория
+`MACOS_CERT_P12` (base64 от .p12), `MACOS_CERT_PASSWORD`, `MACOS_SIGN_IDENTITY` и для
+нотаризации `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_PASSWORD`, `MACOS_NOTARY_TEAM_ID` —
+тогда предупреждения не будет вовсе.
+
+## Сборка вручную
+
+- Windows: `build_windows.bat` → `dist\ConvWheel\ConvWheel.exe`
+- macOS: `./build_macos.sh` → `dist/ConvWheel-<версия>-<arch>.dmg`
+
+Собирать нужно на той системе, для которой сборка.
+
+## Управление колесом
+- Навести и кликнуть по сектору — конвертировать; цифры `1–8` — то же с клавиатуры.
+- `Esc`, правый клик, клик по центру или мимо колеса — закрыть.
+- После готовности: клик по центру / `Enter` — показать файл в папке. Колесо закроется само через пару секунд.
+
+## Настройки
+Меню значка: вкл/выкл, кнопка вызова (Shift + левая / колёсико / правая), офисный движок
+(Windows), автозапуск. Остальное — в `config.json`:
+- Windows: `%APPDATA%\ConvWheel\config.json`
+- macOS: `~/Library/Application Support/ConvWheel/config.json`
+
+`output_dir` — общая папка для результатов (по умолчанию рядом с исходником),
+`pdf_image_dpi`, `jpeg_quality`, `selection_delay_ms`. Лог ошибок — `convwheel.log` там же.
+
+### Про Shift + левую кнопку
+В Проводнике и Finder Shift+клик ещё и выделяет диапазон файлов. На Windows колесо всегда
+берёт именно тот файл, по которому кликнули (через UI Automation). На macOS берётся
+выделение Finder — если там окажется несколько файлов, колесо предложит пакетную конвертацию.
+Если мешает — переключите кнопку на **Shift + колёсико**: выделение не меняется, а на Windows
+так можно конвертировать сразу все выделенные файлы (кликнув по одному из них).
+
+## Структура
+```
+main.py                     запуск
+convwheel/app.py            трей, связь триггера и колеса
+convwheel/wheel.py          радиальное меню и анимации
+convwheel/trigger/          перехват клика: windows.py, macos.py
+convwheel/formats.py        какие варианты показывать для какого файла
+convwheel/engine.py         выполнение: временная папка → проверка → перенос
+convwheel/converters/       office, pdf, image, media, text, sheet
+tests/                      make_fixtures.py, test_convert.py, render_preview.py
+```
+
+Отладка без клика: `python main.py --file путь/к/файлу.docx`.
+Тесты конвертации: `python tests/make_fixtures.py && python tests/test_convert.py`.
