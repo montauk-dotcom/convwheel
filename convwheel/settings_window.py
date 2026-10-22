@@ -35,7 +35,8 @@ QComboBox { background: #1A202B; color: #E8EEF7; border: 1px solid #2E3850; bord
 QComboBox QAbstractItemView { background: #1A202B; color: #E8EEF7; selection-background-color: #34405A; }
 """
 
-CARD_W, CARD_H, PREVIEW = 122, 140, 104
+CARD_W, CARD_H, PREVIEW = 112, 130, 96
+COLUMNS = 5
 
 
 class ThemeCard(QWidget):
@@ -185,7 +186,7 @@ class SettingsWindow(QWidget):
             card = ThemeCard(key, key == current)
             card.clicked.connect(self._pick)
             self.cards[key] = card
-            grid.addWidget(card, i // 4, i % 4)
+            grid.addWidget(card, i // COLUMNS, i % COLUMNS)
         lay.addLayout(grid)
 
         lay.addSpacing(6)

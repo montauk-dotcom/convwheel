@@ -18,6 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QConicalGradient, QCursor, QFont, QFontMetrics, QGuiApplication,
+                           QLinearGradient, QTransform,
                            QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
                            QPen, QPixmap, QPolygonF, QRadialGradient)
 from PySide6.QtWidgets import QWidget
@@ -33,6 +34,10 @@ R_IN = 76.0
 HIT_R = R_OUT + 40          # до этого радиуса клик — по колесу (и выбор сектора, и «не мимо»)
 GAP_DEG = 1.6
 ACCENT = QColor("#3BB6FF")
+
+# радиус и толщина дуги-подсветки для стилей, где она есть
+RING_GEOMETRY = {"vinyl": (R_OUT - 3, 3), "helm": (161.0, 5), "tire": (149.0, 4),
+                 "disc": (R_OUT - 3, 3), "donut": (173.0, 4)}
 
 # «Цитрус»: корка R_OUT..CIT_PITH, мякоть, дольки CIT_RI..CIT_RO
 CIT_PITH = 166.0
@@ -70,7 +75,7 @@ class ConvertWheel(QWidget):
     convert_requested = Signal(object, object)  # (колесо, Target)
 
     CHOOSE, WORKING, DONE, ERROR = range(4)
-    _base_cache: dict = {}                      # (тема, dpr) -> QPixmap статичного фона
+    _base_cache: dict = {}                      # (вид, слой, секторов, dpr) -> QPixmap
 
     def __init__(self, files: list[Path], targets: list[Target], *, theme: str | None = None,
                  demo: bool = False):
@@ -404,7 +409,7 @@ class ConvertWheel(QWidget):
         p.translate(-self.c)
 
         style = self.th.style
-        p.drawPixmap(0, 0, self._base_pixmap(p))
+        p.drawPixmap(0, 0, self._layer("base"))
         seg = getattr(self, f"_seg_{style}")
         for i, t in enumerate(self.targets):
             # каскад: каждый следующий сектор появляется чуть позже
@@ -413,23 +418,30 @@ class ConvertWheel(QWidget):
             p.setOpacity(p.opacity() * local * self._segment_alpha(t))
             seg(p, i, t)
             p.restore()
+        if hasattr(self, f"_overlay_{style}"):          # спицы и т.п. — поверх подсветки секторов
+            p.drawPixmap(0, 0, self._layer("overlay"))
         self._paint_highlight_ring(p)
         self._paint_center(p)
 
     # ---------------------------------------------------------------- фон (кэшируется)
-    def _base_pixmap(self, p: QPainter) -> QPixmap:
+    def _layer(self, kind: str) -> QPixmap:
+        """Статичный слой (фон или спицы) рисуется один раз и кэшируется: (вид, слой, секторов, dpr)."""
         dpr = max(1.0, float(self.devicePixelRatioF()) if self.isVisible() else 2.0)
-        key = (self.th.key, round(dpr, 2))
-        pm = ConvertWheel._base_cache.get(key)
-        if pm is None:
-            pm = QPixmap(int(SIZE * dpr), int(SIZE * dpr))
-            pm.setDevicePixelRatio(dpr)
-            pm.fill(Qt.transparent)
-            q = QPainter(pm)
-            q.setRenderHint(QPainter.Antialiasing)
-            getattr(self, f"_base_{self.th.style}")(q)
-            q.end()
-            ConvertWheel._base_cache[key] = pm
+        key = (self.th.key, kind, self.n, round(dpr, 2))
+        cache = ConvertWheel._base_cache
+        if key in cache:
+            return cache[key]
+        pm = QPixmap(int(SIZE * dpr), int(SIZE * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        q = QPainter(pm)
+        q.setRenderHint(QPainter.Antialiasing)
+        getattr(self, f"_{kind}_{self.th.style}")(q)
+        q.end()
+        if not getattr(self, "_nocache", False):        # превью в окне не кэшируем — бережём память
+            cache[key] = pm
+            while len(cache) > 8:                       # хватает на текущий вид и любые числа секторов
+                cache.pop(next(iter(cache)))
         return pm
 
     def _base_neon(self, p: QPainter):
@@ -463,7 +475,7 @@ class ConvertWheel(QWidget):
         rnd = random.Random(7)                                        # поры на корке
         light, dark = x["pores"]
         p.setPen(Qt.NoPen)
-        for _ in range(150):
+        for _ in range(x.get("pores_n", 150)):
             ang, rr = rnd.uniform(0, 2 * math.pi), rnd.uniform(CIT_PITH + 3, R_OUT - 3)
             s, kind = rnd.uniform(0.6, 1.4), rnd.choice((0, 0, 1, 1, 2))
             p.setBrush(_rgba(light, 45 + 20 * kind) if kind else _rgba(dark, 26))
@@ -628,6 +640,8 @@ class ConvertWheel(QWidget):
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawLine(QPointF(px - dx, py - dy), QPointF(px + dx, py + dy))
+        if x.get("seeds"):                # арбуз, киви
+            self._paint_seeds(p, i, wc, x["seeds"])
         hl = QRadialGradient(wc, CIT_RO)  # блик по внешнему краю
         hl.setColorAt(0.80, QColor(255, 255, 255, 0))
         hl.setColorAt(0.97, QColor(255, 255, 255, int(55 + 50 * h)))
@@ -635,7 +649,8 @@ class ConvertWheel(QWidget):
         p.fillPath(path, hl)
         p.restore()
         pos, lift = self._label_pos(i, (CIT_RI + CIT_RO) / 2 + 6, h, t, CIT_RO - 10)
-        self._paint_label(p, t, pos, lift, _mix(x["label"], x["label_h"], h), _rgba(x["glow"], x["glow"][3]))
+        shadow = x.get("label_shadow") or x["glow"]
+        self._paint_label(p, t, pos, lift, _mix(x["label"], x["label_h"], h), _rgba(shadow, shadow[3]))
         self._paint_hint(p, t, pos, lift, _mix(x["hint"], x["hint_h"], h))
 
     def _seg_glass(self, p: QPainter, i: int, t: Target):
@@ -675,6 +690,423 @@ class ConvertWheel(QWidget):
         self._paint_label(p, t, pos, lift, _mix(x["label"], x["label_h"], h), None)
         self._paint_hint(p, t, pos, lift, _mix(x["hint"], x["hint_h"], h))
 
+    # ================================================================ семечки (арбуз, киви)
+    def _paint_seeds(self, p: QPainter, i: int, wc: QPointF, cfg: dict):
+        rnd = random.Random(1000 + i)
+        mid = math.radians(self.seg_center_angle(i))
+        half = math.radians(self.step / 2)
+        col, size, n = QColor(*cfg["color"]), cfg.get("size", 1.0), cfg["count"]
+        zones = ([(CIT_RI + 10, CIT_RI + 19)] if cfg["zone"] == "inner"
+                 else [(CIT_RI + 11, CIT_RI + 21), (CIT_RO - 26, CIT_RO - 15)])
+        p.setPen(Qt.NoPen)
+        for k in range(n):
+            lo, hi = zones[k % len(zones)]
+            rad = rnd.uniform(lo, hi)
+            room = max(0.0, half - (CIT_GAP / 2 + CIT_ROUND + 4) / rad)
+            frac = (2 * k / max(1, n - 1) - 1) if cfg["zone"] == "inner" else rnd.uniform(-0.85, 0.85)
+            ang = mid + frac * room
+            p.save()
+            p.translate(wc.x() + rad * math.cos(ang), wc.y() - rad * math.sin(ang))
+            p.rotate(-math.degrees(ang))                       # семечко вытянуто вдоль радиуса
+            p.setBrush(col)
+            p.drawEllipse(QPointF(0, 0), 3.4 * size, 1.9 * size)
+            p.setBrush(QColor(255, 255, 255, 80))
+            p.drawEllipse(QPointF(0.9 * size, -0.6 * size), 1.0 * size, 0.5 * size)
+            p.restore()
+
+    @staticmethod
+    def _c(v) -> QColor:
+        return v if isinstance(v, QColor) else QColor(v)
+
+    def _soft_shadow(self, p: QPainter, r: float, dy: float = 8, a: int = 80):
+        c = self.c
+        sh = QRadialGradient(QPointF(c.x(), c.y() + dy), r + 18)
+        sh.setColorAt(0.86, QColor(0, 0, 0, a))
+        sh.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(sh)
+        p.drawEllipse(QPointF(c.x(), c.y() + dy), r + 18, r + 18)
+
+    def _boundary(self, k: int) -> float:
+        """Угол (рад) границы между сектором k и k+1."""
+        return math.radians(self.seg_center_angle(k) - self.step / 2)
+
+    def _polar(self, r: float, a: float) -> QPointF:
+        return QPointF(self.c.x() + r * math.cos(a), self.c.y() - r * math.sin(a))
+
+    def _spoke(self, a: float, r0: float, r1: float, w0: float, w1: float) -> QPainterPath:
+        """Сужающаяся спица вдоль угла a от радиуса r0 до r1."""
+        ca, sa = math.cos(a), math.sin(a)
+        nx, ny = -sa, -ca          # перпендикуляр в экранных координатах
+        c = self.c
+        pts = [QPointF(c.x() + r0 * ca + nx * w0 / 2, c.y() - r0 * sa + ny * w0 / 2),
+               QPointF(c.x() + r1 * ca + nx * w1 / 2, c.y() - r1 * sa + ny * w1 / 2),
+               QPointF(c.x() + r1 * ca - nx * w1 / 2, c.y() - r1 * sa - ny * w1 / 2),
+               QPointF(c.x() + r0 * ca - nx * w0 / 2, c.y() - r0 * sa - ny * w0 / 2)]
+        path = QPainterPath()
+        path.addPolygon(QPolygonF(pts))
+        path.closeSubpath()
+        return path
+
+    def _std_labels(self, p: QPainter, i: int, t: Target, rr: float, r_max: float):
+        h, x = self.hover_amt[i], self.th.x
+        pos, lift = self._label_pos(i, rr, h, t, r_max)
+        glow = x.get("glow")
+        if isinstance(glow, tuple):
+            glow = _rgba(glow, glow[3])
+        self._paint_label(p, t, pos, lift, _mix(x["label"], x["label_h"], h), glow)
+        self._paint_hint(p, t, pos, lift, _mix(x["hint"], x["hint_h"], h))
+
+    # ================================================================ пицца
+    def _base_pizza(self, p: QPainter):
+        c, x = self.c, self.th.x
+        self._soft_shadow(p, R_OUT, 9, 90)
+        crust = [self._c(v) for v in x["crust"]]
+        g = QRadialGradient(c, R_OUT)
+        g.setColorAt(150 / R_OUT, crust[0])
+        g.setColorAt(0.93, crust[1])
+        g.setColorAt(1.0, crust[2])
+        p.setBrush(g)
+        p.setPen(QPen(crust[2].darker(115), 1.4))
+        p.drawEllipse(c, R_OUT, R_OUT)
+        rnd = random.Random(5)
+        p.setPen(Qt.NoPen)
+        for _ in range(140):                                   # подрумяненные пятна и мука
+            a, rr = rnd.uniform(0, 2 * math.pi), rnd.uniform(158, R_OUT - 4)
+            if rnd.random() < 0.7:
+                p.setBrush(QColor(120, 60, 15, rnd.randint(40, 90)))
+                s = rnd.uniform(1.5, 4.5)
+            else:
+                p.setBrush(QColor(255, 250, 235, 90))
+                s = rnd.uniform(0.8, 1.6)
+            p.drawEllipse(self._polar(rr, a), s * 1.4, s)
+        p.setBrush(self._c(x["sauce"]))                        # соус виден в разрезах
+        p.drawEllipse(c, 155, 155)
+
+    def _seg_pizza(self, p: QPainter, i: int, t: Target):
+        h, x = self.hover_amt[i], self.th.x
+        path, wc = self._wedge(i, R_IN + 3, 152, 5, 3, h, push=11)
+        if h > 0.01:                                           # кусок «вытаскивают» — тень
+            p.save()
+            p.translate(0, 6 * h)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, int(75 * h)))
+            p.drawPath(path)
+            p.restore()
+        ch, chh = [self._c(v) for v in x["cheese"]], [self._c(v) for v in x["cheese_h"]]
+        g = QRadialGradient(wc, 156)
+        g.setColorAt(R_IN / 156, _mix(ch[0], chh[0], h))
+        g.setColorAt(1.0, _mix(ch[1], chh[1], h))
+        p.setBrush(g)
+        p.setPen(QPen(self._c(x["cheese_edge"]), 1.2))
+        p.drawPath(path)
+        p.save()
+        p.setClipPath(path)
+        rnd = random.Random(50 + i)
+        mid = math.radians(self.seg_center_angle(i))
+        half = math.radians(self.step / 2)
+        p.setPen(Qt.NoPen)
+        for _ in range(9):                                     # пузырьки сыра
+            rr = rnd.uniform(R_IN + 12, 146)
+            a = mid + rnd.uniform(-0.8, 0.8) * half
+            p.setBrush(QColor(255, 244, 200, 110) if rnd.random() < 0.6 else QColor(205, 130, 40, 70))
+            s = rnd.uniform(2.5, 6)
+            q = self._polar(rr, a)
+            p.drawEllipse(QPointF(q.x() + wc.x() - self.c.x(), q.y() + wc.y() - self.c.y()), s, s * 0.8)
+        pep = self._c(x["pepperoni"])
+        r_pep = 9.5 if self.n <= 8 else 7.5
+        for k in (-1, 1):                                      # пепперони у корочки, по бокам от подписи
+            rr = 136
+            room = half - (r_pep + 6) / rr
+            q = self._polar(rr, mid + k * min(room, max(0.0, half * 0.62)))
+            q = QPointF(q.x() + wc.x() - self.c.x(), q.y() + wc.y() - self.c.y())
+            p.setBrush(pep.darker(125))
+            p.drawEllipse(q, r_pep, r_pep)
+            p.setBrush(pep)
+            p.drawEllipse(q, r_pep - 1.4, r_pep - 1.4)
+            p.setBrush(QColor(255, 210, 190, 90))
+            for _ in range(3):
+                p.drawEllipse(QPointF(q.x() + rnd.uniform(-4, 4), q.y() + rnd.uniform(-4, 4)), 1.2, 1.2)
+        leaf = self._polar(R_IN + 15, mid - 0.55 * half)       # листик базилика
+        leaf = QPointF(leaf.x() + wc.x() - self.c.x(), leaf.y() + wc.y() - self.c.y())
+        p.save()
+        p.translate(leaf)
+        p.rotate(rnd.uniform(0, 180))
+        p.setBrush(self._c(x["basil"]))
+        p.drawEllipse(QPointF(0, 0), 5.5, 2.8)
+        p.restore()
+        p.restore()
+        self._std_labels(p, i, t, (R_IN + 152) / 2 + 4, 140)
+
+    # ================================================================ пончик
+    def _base_donut(self, p: QPainter):
+        c, x = self.c, self.th.x
+        self._soft_shadow(p, R_OUT, 9, 85)
+        dough = [self._c(v) for v in x["dough"]]
+        g = QRadialGradient(c, R_OUT)
+        g.setColorAt(R_IN / R_OUT, dough[2])
+        g.setColorAt(0.62, dough[0])
+        g.setColorAt(0.9, dough[1])
+        g.setColorAt(1.0, dough[2])
+        p.setBrush(g)
+        p.setPen(QPen(dough[2].darker(115), 1.2))
+        p.drawEllipse(c, R_OUT, R_OUT)
+        pts = []                                               # глазурь с волнистым краем
+        for k in range(240):
+            a = 2 * math.pi * k / 240
+            r = 163 + 5 * math.sin(7 * a + 0.4) + 3 * math.sin(13 * a + 1.3) + 2 * math.sin(23 * a)
+            pts.append(self._polar(r, a))
+        outer = QPainterPath()
+        outer.addPolygon(QPolygonF(pts))
+        outer.closeSubpath()
+        hole = QPainterPath()
+        hole.addEllipse(c, R_IN + 7, R_IN + 7)
+        glaze = outer.subtracted(hole)
+        gl = [self._c(v) for v in x["glaze"]]
+        gg = QRadialGradient(c, 170)
+        gg.setColorAt(R_IN / 170, gl[1])
+        gg.setColorAt(0.6, gl[0])
+        gg.setColorAt(1.0, gl[1])
+        p.setBrush(gg)
+        p.setPen(QPen(self._c(x["glaze_edge"]), 1.2))
+        p.drawPath(glaze)
+        shine = QConicalGradient(c, 120)                       # блик глазури
+        shine.setColorAt(0.0, QColor(255, 255, 255, 90))
+        shine.setColorAt(0.12, QColor(255, 255, 255, 0))
+        shine.setColorAt(0.88, QColor(255, 255, 255, 0))
+        shine.setColorAt(1.0, QColor(255, 255, 255, 90))
+        p.fillPath(glaze, shine)
+        rnd = random.Random(9)                                 # посыпка — у краёв, середина свободна под подписи
+        cols = [self._c(v) for v in x["sprinkles"]]
+        p.setPen(Qt.NoPen)
+        for _ in range(110):
+            band = rnd.random() < 0.45
+            rr = rnd.uniform(R_IN + 12, R_IN + 22) if band else rnd.uniform(146, 157)
+            a = rnd.uniform(0, 2 * math.pi)
+            p.save()
+            p.translate(self._polar(rr, a))
+            p.rotate(rnd.uniform(0, 180))
+            p.setBrush(rnd.choice(cols))
+            p.drawRoundedRect(QRectF(-4, -1.3, 8, 2.6), 1.3, 1.3)
+            p.restore()
+
+    def _seg_donut(self, p: QPainter, i: int, t: Target):
+        h = self.hover_amt[i]
+        if h > 0.01:
+            path, _ = self._wedge(i, R_IN + 8, 158, 6, 12, 0)
+            p.fillPath(path, QColor(255, 255, 255, int(70 * h)))
+        self._std_labels(p, i, t, (R_IN + 160) / 2 + 2, 148)
+
+    # ================================================================ штурвал
+    def _base_helm(self, p: QPainter):
+        c, x = self.c, self.th.x
+        self._soft_shadow(p, 172, 8, 80)
+        paper = [self._c(v) for v in x["paper"]]
+        g = QRadialGradient(c, 150)
+        g.setColorAt(0.0, paper[0])
+        g.setColorAt(1.0, paper[1])
+        p.setBrush(g)
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(c, 150, 150)
+        p.setBrush(Qt.NoBrush)                                 # роза ветров — едва заметно
+        p.setPen(QPen(QColor(110, 70, 30, 40), 1))
+        for r in (104, 140):
+            p.drawEllipse(c, r, r)
+        for k in range(32):
+            a = 2 * math.pi * k / 32
+            p.drawLine(self._polar(140, a), self._polar(146 if k % 2 else 134, a))
+        wood = [self._c(v) for v in x["wood"]]                 # деревянный обод
+        ring = QPainterPath()
+        ring.addEllipse(c, 172, 172)
+        inner = QPainterPath()
+        inner.addEllipse(c, 150, 150)
+        rim = ring.subtracted(inner)
+        wg = QRadialGradient(c, 172)
+        wg.setColorAt(150 / 172, wood[2])
+        wg.setColorAt(0.94, wood[0])
+        wg.setColorAt(1.0, wood[2])
+        p.fillPath(rim, wg)
+        rnd = random.Random(4)
+        p.save()
+        p.setClipPath(rim)
+        for _ in range(46):                                    # волокна дерева
+            r = rnd.uniform(152, 170)
+            a0 = rnd.uniform(0, 360)
+            p.setPen(QPen(QColor(50, 25, 8, rnd.randint(30, 70)), rnd.uniform(0.6, 1.4)))
+            p.drawArc(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r), int(a0 * 16), int(rnd.uniform(20, 70) * 16))
+        p.restore()
+        p.setPen(QPen(self._c(x["brass"]), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, 150, 150)
+        p.drawEllipse(c, 172, 172)
+
+    def _overlay_helm(self, p: QPainter):
+        x = self.th.x
+        wood = [self._c(v) for v in x["wood"]]
+        brass = self._c(x["brass"])
+        for k in range(self.n):
+            a = self._boundary(k)
+            spoke = self._spoke(a, R_IN - 6, 150, 9, 7)
+            p.setBrush(wood[1])
+            p.setPen(QPen(wood[2].darker(130), 1))
+            p.drawPath(spoke)
+            p.setPen(QPen(QColor(255, 220, 170, 60), 1.2))     # блик вдоль спицы
+            p.drawLine(self._polar(R_IN, a), self._polar(148, a))
+            collar = self._spoke(a, 148, 174, 12, 12)          # латунная муфта на ободе
+            p.setBrush(brass)
+            p.setPen(QPen(brass.darker(140), 1))
+            p.drawPath(collar)
+            hg = QPainterPath()                                # точёная рукоять
+            hg.addPath(self._spoke(a, 174, 182, 9, 9))
+            for rr, ra, rb in ((188, 10.5, 8.5), (202, 9.5, 7.8)):
+                q = self._polar(rr, a)
+                e = QPainterPath()
+                e.addEllipse(QRectF(-ra, -rb, 2 * ra, 2 * rb))
+                tr = QTransform()
+                tr.translate(q.x(), q.y())
+                tr.rotate(-math.degrees(a))
+                hg.addPath(tr.map(e))
+            q = self._polar(211, a)
+            hg.addEllipse(q, 5.5, 5.5)
+            p.setBrush(wood[0])
+            p.setPen(QPen(wood[2].darker(140), 1))
+            p.drawPath(hg.simplified())
+        p.setBrush(Qt.NoBrush)                                 # латунное кольцо ступицы
+        p.setPen(QPen(brass, 4))
+        p.drawEllipse(self.c, R_IN + 1, R_IN + 1)
+
+    def _seg_helm(self, p: QPainter, i: int, t: Target):
+        h = self.hover_amt[i]
+        if h > 0.01:
+            path = self._ring_segment(i, R_IN + 2, 149, 0)
+            hv = QColor(self.th.x["hover"])
+            hv.setAlpha(int(hv.alpha() * h))
+            p.fillPath(path, hv)
+        self._std_labels(p, i, t, (R_IN + 150) / 2 + 4, 136)
+
+    # ================================================================ колесо
+    def _base_tire(self, p: QPainter):
+        c, x = self.c, self.th.x
+        self._soft_shadow(p, R_OUT, 9, 100)
+        rub = [self._c(v) for v in x["rubber"]]
+        g = QRadialGradient(c, R_OUT)
+        g.setColorAt(146 / R_OUT, rub[0])
+        g.setColorAt(0.9, rub[1])
+        g.setColorAt(1.0, rub[2])
+        p.setBrush(g)
+        p.setPen(QPen(QColor(0, 0, 0), 1.5))
+        p.drawEllipse(c, R_OUT, R_OUT)
+        blocks = 54                                            # протектор
+        for k in range(blocks):
+            a = 2 * math.pi * (k + 0.5 * (k % 2)) / blocks
+            p.save()
+            p.translate(self._polar(171 if k % 2 else 168, a))
+            p.rotate(-math.degrees(a))
+            p.setBrush(QColor(58, 58, 58))
+            p.setPen(QPen(QColor(15, 15, 15), 1))
+            p.drawRoundedRect(QRectF(-6, -7.5, 12, 15), 2.5, 2.5)
+            p.restore()
+        p.setPen(Qt.NoPen)                                     # боковина
+        p.setBrush(QColor(40, 40, 40))
+        p.drawEllipse(c, 158, 158)
+        metal = [self._c(v) for v in x["metal"]]               # закраина диска
+        mg = QRadialGradient(c, 153)
+        mg.setColorAt(140 / 153, metal[0])
+        mg.setColorAt(0.97, metal[1])
+        mg.setColorAt(1.0, metal[2])
+        p.setBrush(mg)
+        p.setPen(QPen(metal[2], 1))
+        p.drawEllipse(c, 153, 153)
+        brake = self._c(x["brake"])                            # тормозной диск
+        bg = QRadialGradient(c, 146)
+        bg.setColorAt(0.0, brake.darker(130))
+        bg.setColorAt(1.0, brake)
+        p.setBrush(bg)
+        p.setPen(QPen(QColor(0, 0, 0, 120), 1))
+        p.drawEllipse(c, 146, 146)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(20, 21, 24))
+        for row, r in enumerate((104, 118, 132)):              # сверления
+            for k in range(36):
+                a = 2 * math.pi * (k + row / 3) / 36
+                p.drawEllipse(self._polar(r, a), 2.2, 2.2)
+
+    def _overlay_tire(self, p: QPainter):
+        metal = [self._c(v) for v in self.th.x["metal"]]
+        for k in range(self.n):
+            a = self._boundary(k)
+            sp = self._spoke(a, R_IN - 4, 147, 8, 13)          # тонкая спица — не закрывает подписи
+            lg = QLinearGradient(self._polar(120, a - 0.06), self._polar(120, a + 0.06))
+            lg.setColorAt(0.0, metal[2])
+            lg.setColorAt(0.45, metal[0])
+            lg.setColorAt(1.0, metal[1])
+            p.setBrush(lg)
+            p.setPen(QPen(metal[2].darker(130), 1))
+            p.drawPath(sp)
+            p.setBrush(QColor(25, 26, 30))                     # болт крепления у ступицы
+            p.setPen(QPen(metal[1], 1.2))
+            p.drawEllipse(self._polar(R_IN + 6, a), 3.2, 3.2)
+
+    def _seg_tire(self, p: QPainter, i: int, t: Target):
+        h = self.hover_amt[i]
+        if h > 0.01:
+            path = self._ring_segment(i, R_IN + 2, 145, 0)
+            hv = QColor(self.th.x["hover"])
+            hv.setAlpha(int(hv.alpha() * h))
+            p.fillPath(path, hv)
+        x = self.th.x
+        pos, lift = self._label_pos(i, (R_IN + 146) / 2 + 4, h, t, 132)
+        self._paint_label(p, t, pos, lift, _mix(x["label"], x["label_h"], h), QColor(0, 0, 0, 170))
+        self._paint_hint(p, t, pos, lift, _mix(x["hint"], x["hint_h"], h))
+
+    # ================================================================ CD-диск
+    def _base_disc(self, p: QPainter):
+        c, x = self.c, self.th.x
+        self._soft_shadow(p, R_OUT, 7, 70)
+        sv = [self._c(v) for v in x["silver"]]
+        g = QRadialGradient(c, R_OUT)
+        g.setColorAt(0.0, sv[0])
+        g.setColorAt(0.8, sv[1])
+        g.setColorAt(1.0, sv[2])
+        p.setBrush(g)
+        p.setPen(QPen(QColor(110, 118, 128, 160), 1.2))
+        p.drawEllipse(c, R_OUT, R_OUT)
+        band = QPainterPath()
+        band.addEllipse(c, R_OUT - 2, R_OUT - 2)
+        hole = QPainterPath()
+        hole.addEllipse(c, R_IN + 16, R_IN + 16)
+        band = band.subtracted(hole)
+        rainbow = [(255, 120, 140), (255, 210, 110), (150, 245, 160), (110, 200, 255), (185, 140, 255),
+                   (255, 120, 140)]
+        for start, alpha in ((25, 125), (205, 85)):            # две радужные полосы, как на настоящем диске
+            cg = QConicalGradient(c, start)
+            for k, col in enumerate(rainbow):
+                cg.setColorAt(k / (len(rainbow) - 1) * 0.42, _rgba(col, alpha))
+            cg.setColorAt(0.5, QColor(255, 255, 255, 0))
+            cg.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.fillPath(band, cg)
+        p.setBrush(Qt.NoBrush)                                 # дорожки
+        r, k = R_IN + 18, 0
+        while r < R_OUT - 3:
+            p.setPen(QPen(QColor(255, 255, 255, 26) if k % 2 else QColor(0, 0, 0, 10), 0.8))
+            p.drawEllipse(c, r, r)
+            r += 3.2
+            k += 1
+        p.setPen(QPen(QColor(120, 128, 138, 120), 1))
+        p.drawEllipse(c, R_IN + 16, R_IN + 16)
+        p.setBrush(QColor(255, 255, 255, 120))                 # прозрачное кольцо у отверстия
+        p.drawEllipse(c, R_IN + 9, R_IN + 9)
+
+    def _seg_disc(self, p: QPainter, i: int, t: Target):
+        h = self.hover_amt[i]
+        if h > 0.01:
+            path = self._ring_segment(i, R_IN + 17, R_OUT - 3, 0)
+            p.fillPath(path, QColor(255, 255, 255, int(85 * h)))
+        a = self._boundary(i)
+        p.setPen(QPen(QColor(255, 255, 255, 110), 1))
+        p.drawLine(self._polar(R_IN + 18, a), self._polar(R_OUT - 6, a))
+        self._std_labels(p, i, t, (R_IN + R_OUT) / 2 + 6, R_OUT - 14)
+
     # ---------------------------------------------------------------- подписи
     def _label_pos(self, i: int, rr: float, h: float, t: Target | None = None,
                    r_max: float = 0.0) -> tuple[QPointF, float]:
@@ -702,6 +1134,8 @@ class ConvertWheel(QWidget):
         if self.th.style != "neon":
             f2.setWeight(QFont.Medium)
             f2.setPixelSize(10 if len(t.hint) > 14 else 11)
+        if self.th.style in ("helm", "tire") and self.n >= 7:   # между спицами места меньше
+            f2.setPixelSize(9 if len(t.hint) > 11 else 10)
         return f2
 
     def _paint_label(self, p: QPainter, t: Target, pos: QPointF, lift: float, col: QColor,
@@ -722,7 +1156,7 @@ class ConvertWheel(QWidget):
     def _paint_highlight_ring(self, p: QPainter):
         """Дуга-«бегунок» по краю, плавно перетекающая к сектору под курсором."""
         style = self.th.style
-        if self.hl_angle is None or style == "glass":
+        if self.hl_angle is None or style in ("glass", "pizza"):
             return
         amt = max(self.hover_amt) if self.hover_amt else 0
         if amt < 0.01:
@@ -732,11 +1166,12 @@ class ConvertWheel(QWidget):
             col = QColor(255, 255, 255, int(200 * amt))
             r, layers = (R_OUT + CIT_PITH) / 2, ((9, 0.22), (4, 1.0))
             span -= 6
-        elif style == "vinyl":
+        elif style in RING_GEOMETRY:
             col = QColor(self.th.x["ring"])
             col.setAlpha(int(255 * amt))
-            r, layers = R_OUT - 3, ((8, 0.25), (3, 1.0))
-            span -= 4
+            r, w = RING_GEOMETRY[style]
+            layers = ((w * 2.4, 0.25), (w, 1.0))
+            span -= 6 if style in ("helm", "tire") else 4
         else:
             hv = self.hover if self.hover >= 0 else 0
             col = self._neon_color(hv, self.targets[hv]) if self.targets else QColor(ACCENT)
@@ -934,6 +1369,7 @@ def sample_targets() -> list[Target]:
 def render_preview(theme_key: str, px: int, dpr: float = 2.0, hover: int = 1, state: str = "choose") -> QPixmap:
     """Колесо выбранного вида как картинка (без окна) — для карточек выбора вида."""
     w = ConvertWheel([SAMPLE_FILE], sample_targets(), theme=theme_key, demo=True)
+    w._nocache = True
     w.timer.stop()
     w.open_p = 1.0
     if hover >= 0:

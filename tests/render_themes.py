@@ -15,7 +15,7 @@ from convwheel.wheel import render_preview
 bg_path, out = sys.argv[1], sys.argv[2]
 cell = 300
 keys = list(themes.THEMES)
-cols = 4
+cols = 5
 rows = (len(keys) + cols - 1) // cols
 sheet = QImage(cell * cols, (cell + 30) * rows * 2, QImage.Format_RGB32)
 bg = QImage(bg_path).scaled(cell * cols, (cell + 30) * rows * 2, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)

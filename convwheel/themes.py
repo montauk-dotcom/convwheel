@@ -52,7 +52,8 @@ class Theme:
 
 def _citrus(key, name, *, rind, rind_edge, pores, pith, wedge, wedge_h, edge, edge_h, vesicle,
             label, label_h, glow, hint, hint_h, center, border, text, sub, muted, pill, accent,
-            link, doc_edge, doc_fold, doc_text, folder, err="#B3261E") -> Theme:
+            link, doc_edge, doc_fold, doc_text, folder, err="#B3261E", seeds=None, pores_n=150,
+            label_shadow=None) -> Theme:
     return Theme(
         key, name, "citrus", Q(center[0]), Q(center[1]), border, Q(text), Q(sub), Q(muted), Q(pill),
         Q("#FFFFFF"), Q("#FFFFFF"), Q(doc_edge), Q(doc_fold), Q(doc_text), Q(folder[0]), Q(folder[1]),
@@ -60,7 +61,21 @@ def _citrus(key, name, *, rind, rind_edge, pores, pith, wedge, wedge_h, edge, ed
         dict(rind=[Q(c) for c in rind], rind_edge=Q(rind_edge), pores=pores, pith=[Q(c) for c in pith],
              wedge=[Q(c) for c in wedge], wedge_h=[Q(c) for c in wedge_h], edge=Q(edge), edge_h=Q(edge_h),
              vesicle=vesicle, label=Q(label), label_h=Q(label_h), glow=glow, hint=Q(hint),
-             hint_h=Q(hint_h), ring=Q(255, 255, 255)))
+             hint_h=Q(hint_h), ring=Q(255, 255, 255), seeds=seeds, pores_n=pores_n,
+             label_shadow=label_shadow))
+
+
+def _mk(key, name, style, *, center, border, text, sub, muted, pill, pill_text="#FFFFFF",
+        doc="#FFFFFF", doc_edge, doc_fold, doc_text, folder, accent, track=(0, 0, 0, 40), ok=None,
+        ok_mark="#FFFFFF", err="#B3261E", link=None, **x) -> Theme:
+    """Короткая запись вида: цвета центра + параметры стиля (x)."""
+    def c(v):
+        return v if isinstance(v, QColor) else (Q(*v) if isinstance(v, tuple) else Q(v))
+    return Theme(key, name, style, c(center[0]), c(center[1]), c(border), c(text), c(sub), c(muted),
+                 c(pill), c(pill_text), c(doc), c(doc_edge), c(doc_fold), c(doc_text), c(folder[0]),
+                 c(folder[1]), c(accent), c(track), c(ok or accent), c(ok_mark), c(err), c(link or accent),
+                 {k: (c(v) if isinstance(v, (str, tuple)) and k not in ("seeds_zone",) else v)
+                  for k, v in x.items()})
 
 
 THEMES: dict[str, Theme] = {}
@@ -151,6 +166,85 @@ _add(Theme(
          sheen=Q(255, 255, 255, 40), sep=Q(255, 255, 255, 20), hover=Q(255, 255, 255, 46),
          label=Q("#E6E6E6"), label_h=Q("#FFFFFF"), hint=Q(150, 150, 150), hint_h=Q(225, 225, 225),
          ring=Q("#F06A3C"))))
+
+
+# ---------------------------------------------------------------- фрукты с семечками
+_add(_citrus(
+    "watermelon", "Арбуз",
+    rind=("#C9E89A", "#5E9E2E", "#1F5A17"), rind_edge="#174D12",
+    pores=((225, 245, 190), (20, 70, 15)), pith=("#F4FAE6", "#E4F2C8", "#CFE6A6"),
+    wedge=("#E2384E", "#F25468"), wedge_h=("#F65A6E", "#FF7D8C"), edge="#C92A40", edge_h="#FFE3E7",
+    vesicle=(255, 205, 212), label="#FFFFFF", label_h="#FFFFFF", glow=(120, 10, 25, 150),
+    hint="#FFE3E7", hint_h="#FFFFFF", center=("#FFF7F7", "#FBE3E3"), border=Q(150, 30, 45, 60),
+    text="#4A0A14", sub="#7A2A36", muted="#A0525E", pill="#2E7D32", accent="#D62A44", link="#B71C35",
+    doc_edge="#F1C9CF", doc_fold="#F6D5DA", doc_text="#A0525E", folder=("#5E9E2E", "#8CC63F"),
+    seeds={"color": (30, 22, 20), "zone": "both", "count": 5, "size": 1.0}, label_shadow=(90, 0, 15, 170)))
+
+_add(_citrus(
+    "kiwi", "Киви",
+    rind=("#9C7A52", "#7A5734", "#5C3F22"), rind_edge="#4E341C",
+    pores=((200, 170, 130), (60, 40, 20)), pith=("#F1F7D8", "#E2EEBB", "#CFE29A"),
+    wedge=("#C7E07A", "#7DB733"), wedge_h=("#DBEE98", "#9CD24C"), edge="#6FA82B", edge_h="#F5FFE0",
+    vesicle=(235, 250, 200), label="#1F3608", label_h="#122304", glow=(245, 255, 225, 150),
+    hint="#3A5A16", hint_h="#22400A", center=("#FFFDF0", "#F3EDCC"), border=Q(90, 110, 40, 60),
+    text="#2A3A10", sub="#556B2F", muted="#7E8F5A", pill="#5E8F22", accent="#5E8F22", link="#3F7A12",
+    doc_edge="#DCE6B8", doc_fold="#E6EFC6", doc_text="#6A8A3C", folder=("#8DB84A", "#B4D77A"),
+    seeds={"color": (25, 20, 15), "zone": "inner", "count": 9, "size": 0.75}, pores_n=420))
+
+# ---------------------------------------------------------------- еда
+_add(_mk(
+    "pizza", "Пицца", "pizza",
+    center=("#FFF6E2", "#F0DCB2"), border=(120, 70, 20, 70), text="#4A240A", sub="#7A4A20",
+    muted="#9C7448", pill="#C8442B", doc_edge="#E8D3A8", doc_fold="#F1DDB2", doc_text="#9A6A2C",
+    folder=("#D98B3A", "#EDB36A"), accent="#C8442B",
+    crust=["#E9B568", "#D08E40", "#A9662A"], sauce="#C8442B", cheese=["#F9DA7E", "#F3C24F"],
+    cheese_h=["#FFE59A", "#FFD36A"], cheese_edge="#E2A93A", pepperoni="#B8352A", basil="#3E8E3A",
+    label="#5A1E0A", label_h="#3E1404", glow=(255, 248, 220, 170), hint="#7A3A14", hint_h="#5A2A0A"))
+
+_add(_mk(
+    "donut", "Пончик", "donut",
+    center=("#FFF4E4", "#F6DDBA"), border=(150, 90, 40, 60), text="#5A2E10", sub="#8A5A30",
+    muted="#A8805A", pill="#E0457B", doc_edge="#F1D2BC", doc_fold="#F6DCC8", doc_text="#B06A48",
+    folder=("#E9A04A", "#F5BC6A"), accent="#E0457B",
+    dough=["#F0C27E", "#D9984F", "#B8733A"], glaze=["#F9A8C9", "#F07AA8"], glaze_edge="#E2669A",
+    sprinkles=["#FFFFFF", "#FFD54F", "#64B5F6", "#81C784", "#BA68C8", "#FF8A65"],
+    label="#5A1030", label_h="#3A0820", glow=(255, 240, 246, 190), hint="#7A2848", hint_h="#5A1030",
+    ring="#FFFFFF"))
+
+# ---------------------------------------------------------------- предметы
+_add(_mk(
+    "helm", "Штурвал", "helm",
+    center=("#F6DC92", "#C99A3E"), border=(110, 75, 20, 140), text="#3A2608", sub="#5E4216",
+    muted="#7A5A28", pill="#6B3F1D", pill_text="#F7E7C4", doc="#FFF8E6", doc_edge="#C9A44A",
+    doc_fold="#E8D29A", doc_text="#8A6420", folder=("#8B5A2B", "#B07A44"), accent="#6B3F1D",
+    ok="#6B3F1D", ok_mark="#F6DC92",
+    wood=["#9A6534", "#7A4A22", "#5C3416"], brass="#D4AF4F", paper=["#F6E8C8", "#E6CD9C"],
+    label="#3E2412", label_h="#2A1608", glow=(255, 248, 228, 160), hint="#6B4A2B", hint_h="#4A2E14",
+    hover=(255, 200, 90, 120), ring="#FFD36A"))
+
+_add(_mk(
+    "tire", "Колесо", "tire",
+    center=("#F3F5F7", "#B6BCC4"), border=(60, 65, 72, 120), text="#1E2126", sub="#3E434A",
+    muted="#5E646C", pill="#1E2126", doc_edge="#C9CED5", doc_fold="#DADFE4", doc_text="#5E646C",
+    folder=("#7D838B", "#A9AFB7"), accent="#E53935", ok="#E53935", err="#8E1B1B",
+    rubber=["#3A3A3A", "#222222", "#0E0E0E"], metal=["#F1F3F5", "#A7ADB5", "#6E747C"],
+    brake="#34373C", label="#F5F5F5", label_h="#FFFFFF", hint="#AEB3BA", hint_h="#E6E8EB",
+    hover=(255, 255, 255, 30), ring="#E53935"))
+
+_add(_mk(
+    "disc", "CD-диск", "disc",
+    center=("#FFFFFF", "#E2E6EA"), border=(0, 0, 0, 40), text="#1F2328", sub="#4A5058",
+    muted="#6E757E", pill="#1F2328", doc_edge="#D3D8DE", doc_fold="#E3E7EB", doc_text="#6E757E",
+    folder=("#9AA3AD", "#C3CAD2"), accent="#6C5CE7",
+    silver=["#F2F4F6", "#D7DCE1", "#B9C0C8"], label="#1A1E23", label_h="#000000",
+    glow=(255, 255, 255, 200), hint="#3E444C", hint_h="#1F2328", ring="#FFFFFF"))
+
+
+# порядок в окне и в меню: фрукты, еда, яркие, спокойные, предметы
+ORDER = ["citrus", "orange", "lime", "watermelon", "kiwi",
+         "pizza", "donut", "neon", "synthwave", "vinyl",
+         "glass", "graphite", "disc", "helm", "tire"]
+THEMES = {k: THEMES[k] for k in ORDER + [k for k in THEMES if k not in ORDER]}
 
 
 def get(key: str | None) -> Theme:

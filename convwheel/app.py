@@ -82,6 +82,7 @@ class Controller(QObject):
             from . import mac_permissions
             if not mac_permissions.all_required_ok():
                 QTimer.singleShot(400, self.show_permissions)
+        QTimer.singleShot(2500, self._prebuild_window)   # окно собираем заранее — откроется мгновенно
         if not CONFIG.extra.get("welcomed"):
             CONFIG.extra["welcomed"] = True
             CONFIG.save()
@@ -187,15 +188,22 @@ class Controller(QObject):
         self.act_enabled.blockSignals(False)
 
     # ------------------------------------------------------------ окна
-    def show_settings(self, welcome: bool = False):
-        from .settings_window import SettingsWindow
+    def _prebuild_window(self):
         if self.settings is None:
-            self.settings = SettingsWindow(welcome=welcome)
-            self.settings.theme_changed.connect(lambda k: self.set_theme(k))
-            self.settings.demo_requested.connect(self.demo)
-            self.settings.permissions_requested.connect(self.show_permissions)
-            self.settings.settings_changed.connect(self._sync_menu)
-            self.settings.visibility_changed.connect(self._schedule_dock_update)
+            self._build_window(welcome=False)
+
+    def _build_window(self, welcome: bool):
+        from .settings_window import SettingsWindow
+        self.settings = SettingsWindow(welcome=welcome)
+        self.settings.theme_changed.connect(lambda k: self.set_theme(k))
+        self.settings.demo_requested.connect(self.demo)
+        self.settings.permissions_requested.connect(self.show_permissions)
+        self.settings.settings_changed.connect(self._sync_menu)
+        self.settings.visibility_changed.connect(self._schedule_dock_update)
+
+    def show_settings(self, welcome: bool = False):
+        if self.settings is None:
+            self._build_window(welcome)
         self._health()
         self.settings.sync()
         self._present(self.settings)

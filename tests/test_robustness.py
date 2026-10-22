@@ -63,11 +63,13 @@ def s1():
     ctl.settings._pick("orange")
     steps.append(("menu_synced", ctl.theme_actions["orange"].isChecked()))
     ctl.manager.outside_click(ctl.manager.wheel.mapToGlobal(ctl.manager.wheel.rect().topLeft()) - __import__("PySide6.QtCore", fromlist=["QPoint"]).QPoint(400, 400))
+    QTimer.singleShot(600, s2)                 # от момента клика, а не от старта теста
 def s2():
     steps.append(("wheel_closed_by_outside_click", ctl.manager.wheel is None))
     ctl.demo("glass")
     steps.append(("demo", ctl.manager.wheel is not None and ctl.manager.wheel.demo))
     ctl.manager.wheel.start(0)
+    QTimer.singleShot(2100, s3)
 def s3():
     w = ctl.manager.wheel
     steps.append(("demo_done", w is not None and w.state == w.DONE))
@@ -83,7 +85,7 @@ def s3():
     ctl.show_settings(); app.processEvents(); ctl._update_dock()
     steps.append(("reopen_same_window", ctl.settings is win and win.isVisible() and dock[-1] is True))
     ctl.quit()
-QTimer.singleShot(200, s1); QTimer.singleShot(900, s2); QTimer.singleShot(3000, s3)
+QTimer.singleShot(200, s1)
 QTimer.singleShot(8000, app.quit)
 code = app.exec()
 results["controller"] = steps
