@@ -71,6 +71,17 @@ def s2():
 def s3():
     w = ctl.manager.wheel
     steps.append(("demo_done", w is not None and w.state == w.DONE))
+    # меню как у AmneziaVPN: первым «Показать», последним «Закрыть»
+    acts = [a.text() for a in ctl.menu.actions() if a.text()]
+    steps.append(("menu_show_first_close_last", acts[0] == "Показать ConvWheel" and acts[-1] == "Закрыть ConvWheel"))
+    # Док: окно открыто → в Доке; крестик → окно спрятано, из Дока ушли, приложение работает
+    dock = []
+    ctl._set_dock = lambda show: dock.append(show)
+    win = ctl.settings
+    win.close(); app.processEvents(); ctl._update_dock()
+    steps.append(("x_hides_keeps_running", (not win.isVisible()) and ctl.tray.isVisible() and dock[-1] is False))
+    ctl.show_settings(); app.processEvents(); ctl._update_dock()
+    steps.append(("reopen_same_window", ctl.settings is win and win.isVisible() and dock[-1] is True))
     ctl.quit()
 QTimer.singleShot(200, s1); QTimer.singleShot(900, s2); QTimer.singleShot(3000, s3)
 QTimer.singleShot(8000, app.quit)
@@ -83,6 +94,6 @@ for k, v in results.items(): print(k, "→", v)
 ok = (results["supervisor_restarts"] == (0, "4") and results["supervisor_gives_up"] == 1
       and results["ipc"] == (True, ["show"]) and "аварийно" in results["worker_crash_isolated"]
       and all(s[1] is True or s[0] == "theme" for s in steps) and steps[1][1:] == ("vinyl", True)
-      and len(steps) == 7 and code == 0)
+      and len(steps) == 10 and code == 0)
 print("ROBUSTNESS OK" if ok else "ROBUSTNESS FAILED")
 sys.exit(0 if ok else 1)

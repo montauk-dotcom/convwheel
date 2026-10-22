@@ -45,6 +45,7 @@ class Controller(QObject):
         self.supervisor_pid = supervisor_pid
         self.settings = None
         self.perm = None
+        self._in_dock = False
         self._light_taskbar = windows_taskbar_is_light()
         self.office_ok = bool(find_soffice()) or (IS_WIN and has_ms_office())
 
@@ -92,13 +93,13 @@ class Controller(QObject):
 
     # ------------------------------------------------------------ меню значка
     def _build_menu(self) -> QMenu:
+        """Короткое меню, как у AmneziaVPN: Показать / быстрые переключатели / Закрыть.
+        Остальные настройки — в окне ConvWheel."""
         m = QMenu()
-        title = QAction(f"{APP_NAME} {__version__}", m)
-        title.setEnabled(False)
-        m.addAction(title)
+        m.addAction(f"Показать {APP_NAME}", self.show_settings)
         self.act_status = QAction("", m)
         self.act_status.setVisible(False)
-        self.act_status.triggered.connect(self.show_permissions)
+        self.act_status.triggered.connect(self._fix_problem)
         m.addAction(self.act_status)
         m.addSeparator()
 
@@ -111,25 +112,13 @@ class Controller(QObject):
         self.theme_actions: dict[str, QAction] = {}
         current = themes.normalize(CONFIG.theme)
         for key, t in themes.THEMES.items():
-            label = t.name + ("  (по умолчанию)" if key == themes.DEFAULT_THEME else "")
-            a = QAction(label, look, checkable=True, checked=key == current)
+            a = QAction(t.name, look, checkable=True, checked=key == current)
             a.triggered.connect(lambda _=False, k=key: self.set_theme(k, preview=True))
             self.theme_group.addAction(a)
             look.addAction(a)
             self.theme_actions[key] = a
         look.addSeparator()
         look.addAction("Посмотреть вживую", lambda: self.demo(themes.normalize(CONFIG.theme)))
-        look.addAction("Все виды с превью…", self.show_settings)
-
-        sub = m.addMenu("Кнопка вызова")
-        self.button_group = QActionGroup(sub)
-        self.button_actions: dict[str, QAction] = {}
-        for key, label in BUTTON_NAMES.items():
-            a = QAction(label, sub, checkable=True, checked=CONFIG.trigger_button == key)
-            a.triggered.connect(lambda _=False, k=key: self._set_button(k))
-            self.button_group.addAction(a)
-            sub.addAction(a)
-            self.button_actions[key] = a
 
         if IS_WIN:
             eng = m.addMenu("Офисный движок")
@@ -140,18 +129,16 @@ class Controller(QObject):
                 a.triggered.connect(lambda _=False, k=key: self._set_engine(k))
                 g2.addAction(a)
                 eng.addAction(a)
-
-        if IS_WIN or IS_MAC:
-            self.act_auto = QAction("Запускать при входе", m, checkable=True, checked=autostart.is_enabled())
-            self.act_auto.toggled.connect(autostart.set_enabled)
-            m.addAction(self.act_auto)
-        if IS_MAC:
-            m.addAction("Разрешения macOS…", self.show_permissions)
         m.addAction("Проверить компоненты", self._diagnostics)
         m.addSeparator()
-        m.addAction("Вид и настройки…", self.show_settings)
-        m.addAction("Выход", self.quit)
+        m.addAction(f"Закрыть {APP_NAME}", self.quit)
         return m
+
+    def _fix_problem(self):
+        if IS_MAC:
+            self.show_permissions()
+        else:
+            self.show_settings()
 
     def _on_tray_activated(self, reason):
         # Windows: клик по значку открывает окно с видами (меню — правой кнопкой).
@@ -190,12 +177,6 @@ class Controller(QObject):
         if self.settings:
             self.settings.sync()
 
-    def _set_button(self, key: str):
-        CONFIG.trigger_button = key
-        CONFIG.save()
-        if self.settings:
-            self.settings.sync()
-
     def _set_engine(self, key: str):
         CONFIG.office_engine = key
         CONFIG.save()
@@ -204,29 +185,20 @@ class Controller(QObject):
         self.act_enabled.blockSignals(True)
         self.act_enabled.setChecked(CONFIG.enabled)
         self.act_enabled.blockSignals(False)
-        a = self.button_actions.get(CONFIG.trigger_button)
-        if a:
-            a.setChecked(True)
 
     # ------------------------------------------------------------ окна
     def show_settings(self, welcome: bool = False):
         from .settings_window import SettingsWindow
-        if self.settings is None or welcome:
-            if self.settings is not None:
-                self.settings.close()
-                self.settings.deleteLater()
+        if self.settings is None:
             self.settings = SettingsWindow(welcome=welcome)
             self.settings.theme_changed.connect(lambda k: self.set_theme(k))
             self.settings.demo_requested.connect(self.demo)
-            self.settings.quit_requested.connect(self.quit)
             self.settings.permissions_requested.connect(self.show_permissions)
             self.settings.settings_changed.connect(self._sync_menu)
+            self.settings.visibility_changed.connect(self._schedule_dock_update)
         self._health()
         self.settings.sync()
-        self.settings.show()
-        self.settings.raise_()
-        self.settings.activateWindow()
-        _activate(self.settings)
+        self._present(self.settings)
 
     def show_permissions(self):
         if not IS_MAC:
@@ -234,9 +206,42 @@ class Controller(QObject):
         from .mac_permissions import PermissionsWindow
         if self.perm is None:
             self.perm = PermissionsWindow(hook_ok=lambda: self.trigger.status == "ok")
-        self.perm.show()
-        self.perm.raise_()
-        _activate(self.perm)
+            self.perm.installEventFilter(self)
+        self._present(self.perm)
+
+    def _present(self, w):
+        """Показать окно поверх остальных. На macOS сначала появляемся в Доке (как обычная программа)."""
+        self._set_dock(True)
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        _activate(w)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (ev.Type.Show, ev.Type.Hide):
+            self._schedule_dock_update()
+        return False
+
+    def _schedule_dock_update(self):
+        QTimer.singleShot(0, self._update_dock)
+
+    def _update_dock(self):
+        visible = any(w is not None and w.isVisible() for w in (self.settings, self.perm))
+        self._set_dock(visible)
+
+    def _set_dock(self, show: bool):
+        """macOS: значок в Доке только пока открыто окно; закрыли крестиком — остаётся лишь строка меню."""
+        if not IS_MAC or show == self._in_dock:
+            return
+        self._in_dock = show
+        try:
+            from AppKit import NSApplication
+            nsapp = NSApplication.sharedApplication()
+            nsapp.setActivationPolicy_(0 if show else 1)       # 0 — обычное приложение, 1 — только меню
+            if show:
+                nsapp.activateIgnoringOtherApps_(True)
+        except Exception as e:
+            log(f"Не удалось переключить значок в Доке: {e}")
 
     def _diagnostics(self):
         def mark(ok):
@@ -271,19 +276,18 @@ class Controller(QObject):
         self.act_status.setText(problem)
         self.act_status.setVisible(bool(problem))
         if self.settings is not None:
-            if problem:
-                text = ("Нет доступа к мыши: откройте «Разрешения macOS…» ниже." if st == "no_permission"
-                        else "Не удалось включить перехват мыши — перезапустите ConvWheel.")
-                self.settings.set_status(text, warn=True)
-            elif not CONFIG.enabled:
-                self.settings.set_status("Колесо выключено — включите его в настройках ниже.", warn=True)
+            warning = ""
+            if st == "no_permission":
+                warning = "Нет доступа к мыши — нажмите «Разрешения macOS…» ниже."
+            elif st == "error":
+                warning = "Не удалось включить перехват мыши — перезапустите ConvWheel."
+            elif not self.office_ok:
+                warning = "LibreOffice не найден — офисные форматы (DOCX → PDF и т.п.) недоступны."
+            if not CONFIG.enabled:
+                text = "Колесо выключено."
             else:
                 text = f"Работает в фоне • {BUTTON_NAMES[CONFIG.trigger_button]} по файлу или папке"
-                if not self.office_ok:
-                    self.settings.set_status(text + "\nLibreOffice не найден — офисные форматы недоступны.",
-                                             warn=True)
-                else:
-                    self.settings.set_status(text)
+            self.settings.set_status(text, warning)
         if IS_WIN:                                   # тема панели задач сменилась — перекрашиваем значок
             light = windows_taskbar_is_light()
             if light != self._light_taskbar:
@@ -328,6 +332,12 @@ class Controller(QObject):
             self.tray.hide()
         except Exception:
             pass
+
+    def on_about_to_quit(self):
+        if IS_MAC:
+            from .watchdog import set_exit_reason
+            set_exit_reason("quit")
+        self._shutdown()
 
     def quit(self):
         if IS_MAC:
@@ -424,6 +434,7 @@ def run_mac_main(argv: list[str]) -> int:
     app = _make_app(argv)
     _controller = Controller(app)
     app._cw_controller = _controller
+    app.aboutToQuit.connect(_controller.on_about_to_quit)
     code = app.exec()
     set_exit_reason("restart" if code == EXIT_RESTART else "quit")
     return 0
