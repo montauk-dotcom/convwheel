@@ -26,7 +26,6 @@ pyinstaller --noconfirm --windowed --name ConvWheel `
   --icon packaging/icon.ico `
   --collect-all pdf2docx --collect-all pymupdf --collect-all imageio_ffmpeg --collect-all py7zr `
   --hidden-import comtypes.gen.UIAutomationClient `
-  --hidden-import pynput.mouse._win32 --hidden-import pynput.keyboard._win32 `
   --hidden-import win32timezone `
   main.py
 Check "pyinstaller"

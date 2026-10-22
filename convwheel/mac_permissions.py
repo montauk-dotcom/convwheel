@@ -7,9 +7,7 @@ Apple требует их от любой программы, которая в�
 """
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget)
@@ -94,16 +92,10 @@ def open_url(url: str):
 
 
 def relaunch():
-    """Перезапуск: разрешения на перехват ввода применяются только к новому процессу."""
-    if getattr(sys, "frozen", False):
-        exe = sys.executable
-        app = exe[: exe.index(".app/") + 4] if ".app/" in exe else exe
-        cmd = f'sleep 1; open -n "{app}"'
-    else:
-        args = " ".join(f'"{a}"' for a in [sys.executable, *sys.argv])
-        cmd = f"sleep 1; {args} &"
-    subprocess.Popen(["/bin/sh", "-c", cmd], start_new_session=True)
-    os._exit(0)
+    """Перезапуск: разрешение «Мониторинг ввода» применяется только к новому процессу.
+    Сам перезапуск делает сторож (watchdog на macOS / supervisor на Windows)."""
+    from .app import request_restart
+    request_restart()
 
 
 # ------------------------------------------------------------------ окно
@@ -168,9 +160,12 @@ class _Row(QFrame):
 
 class PermissionsWindow(QWidget):
     finished = Signal()
+    _finder_done = Signal()
 
-    def __init__(self, checker=None):
+    def __init__(self, checker=None, hook_ok=None):
         super().__init__()
+        self.hook_ok = hook_ok or (lambda: False)
+        self._finder_done.connect(self._on_finder_done)
         # checker позволяет подменить проверки (для предпросмотра/тестов)
         self.check = checker or (lambda: (accessibility_ok(), input_monitoring_ok(), finder_ok()))
         self.setObjectName("root")
@@ -210,7 +205,7 @@ class PermissionsWindow(QWidget):
         self.hint.setObjectName("subtitle")
         self.hint.setWordWrap(True)
         bottom.addWidget(self.hint, 1)
-        self.go = QPushButton("Запустить ConvWheel")
+        self.go = QPushButton("Перезапустить ConvWheel")
         self.go.setObjectName("primary")
         self.go.setCursor(Qt.PointingHandCursor)
         self.go.clicked.connect(relaunch)
@@ -231,8 +226,14 @@ class PermissionsWindow(QWidget):
 
         def work():
             request_finder()
-            QTimer.singleShot(0, self, lambda: (btn.setText("Разрешить"), btn.setEnabled(True)))
+            self._finder_done.emit()           # сигнал безопасно доставит в главный поток
         threading.Thread(target=work, daemon=True).start()
+
+    def _on_finder_done(self):
+        btn = self.rows[2].btn
+        btn.setText("Разрешить")
+        btn.setEnabled(True)
+        self.refresh()
 
     def refresh(self):
         acc, inp, fnd = self.check()
@@ -246,8 +247,11 @@ class PermissionsWindow(QWidget):
         elif not fnd:
             self.hint.setText("Основное готово. Доступ к Finder можно выдать и позже — "
                               "macOS спросит при первом Shift + клике.")
-        else:
-            self.hint.setText("Всё готово! Перезапускаем…")
-            if self.timer.isActive():
-                self.timer.stop()
+        elif self.timer.isActive():
+            self.timer.stop()
+            if self.hook_ok():                 # перехват уже работает — перезапуск не нужен
+                self.hint.setText("Всё готово! Зажмите Shift и кликните по файлу.")
+                QTimer.singleShot(1500, self.close)
+            else:
+                self.hint.setText("Всё готово! Перезапускаем ConvWheel…")
                 QTimer.singleShot(1200, relaunch)

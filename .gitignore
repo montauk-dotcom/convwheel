@@ -10,3 +10,5 @@ tests/out/
 tests/out_folders/
 tests/fixtures/
 .DS_Store
+tests/out_lifecycle/
+tests/out_robust/

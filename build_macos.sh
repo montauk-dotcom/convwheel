@@ -28,8 +28,8 @@ pyinstaller --noconfirm --windowed --name ConvWheel \
   --icon packaging/icon.png \
   --osx-bundle-identifier com.convwheel.agent \
   --collect-all pdf2docx --collect-all pymupdf --collect-all imageio_ffmpeg --collect-all py7zr \
-  --hidden-import pynput.mouse._darwin --hidden-import pynput.keyboard._darwin \
   --hidden-import ApplicationServices --hidden-import Quartz --hidden-import AppKit \
+  --hidden-import Foundation --hidden-import objc \
   main.py
 
 PLIST="$APP/Contents/Info.plist"

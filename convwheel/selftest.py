@@ -26,16 +26,18 @@ def _report(text: str) -> None:
 
 def main() -> int:
     errors = []
-    mods = ("pynput.mouse",) if sys.platform in ("darwin", "win32") else ()  # на Linux нужен X-сервер
-    for mod in (*mods, "PySide6.QtWidgets", "pymupdf", "pdf2docx", "docx", "openpyxl",
-                "PIL.Image", "markdown", "py7zr"):
+    for mod in ("PySide6.QtWidgets", "pymupdf", "pdf2docx", "docx", "openpyxl",
+                "PIL.Image", "markdown", "py7zr", "convwheel.app", "convwheel.settings_window",
+                "convwheel.trigger"):
         try:
             __import__(mod)
         except Exception as e:
             errors.append(f"import {mod}: {e}")
-    platform_mods = {"darwin": ("AppKit", "Quartz", "ApplicationServices"),
+    platform_mods = {"darwin": ("AppKit", "Quartz", "ApplicationServices", "Foundation", "objc",
+                                "convwheel.trigger.macos", "convwheel.mac_permissions"),
                      "win32": ("win32com.client", "pythoncom", "comtypes.client",
-                               "comtypes.gen.UIAutomationClient")}.get(sys.platform, ())
+                               "comtypes.gen.UIAutomationClient", "convwheel.trigger.windows")
+                     }.get(sys.platform, ())
     if platform_mods:
         for mod in platform_mods:
             try:
@@ -72,6 +74,55 @@ def main() -> int:
             assert (back / "a.txt").exists()
     except Exception as e:
         errors.append(f"конвертация: {e}")
+
+    # перехват мыши: нужные функции ОС на месте
+    try:
+        if sys.platform == "darwin":
+            import Quartz as Q
+            for name in ("CGEventTapCreate", "CGEventTapEnable", "CGEventTapIsEnabled", "CGEventMaskBit",
+                         "CFMachPortCreateRunLoopSource", "CFRunLoopRunInMode", "kCGEventTapDisabledByTimeout"):
+                getattr(Q, name)
+        elif sys.platform == "win32":
+            from .trigger.windows import MouseHook, _u
+            _u.SetWindowsHookExW, _u.CallNextHookEx
+    except Exception as e:
+        errors.append(f"перехват мыши: {e}")
+
+    # отдельный процесс-исполнитель: именно так конвертирует установленное приложение
+    try:
+        import json
+        import subprocess
+        from .worker import command
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "w.txt"
+            src.write_text("Проверка исполнителя", encoding="utf-8")
+            job = {"files": [str(src)], "target": "docx",
+                   "progress": str(Path(d) / "p.json"), "result": str(Path(d) / "r.json")}
+            jp = Path(d) / "job.json"
+            jp.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+            subprocess.run(command(str(jp)), timeout=180, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            res = json.loads((Path(d) / "r.json").read_text(encoding="utf-8"))
+            if not res.get("ok") or not Path(res["outputs"][0]).exists():
+                errors.append(f"исполнитель: {res}")
+    except Exception as e:
+        errors.append(f"исполнитель: {e}")
+
+    # окно выбора вида собирается (все 8 превью рисуются)
+    try:
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen" if sys.platform.startswith("linux") else "")
+        if not os.environ["QT_QPA_PLATFORM"]:
+            del os.environ["QT_QPA_PLATFORM"]
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        from .settings_window import SettingsWindow
+        from . import themes
+        w = SettingsWindow()
+        assert len(w.cards) == len(themes.THEMES) >= 8
+        w.deleteLater()
+    except Exception as e:
+        errors.append(f"окно видов: {e}")
 
     if errors:
         _report("SELFTEST FAILED:\n  " + "\n  ".join(errors))

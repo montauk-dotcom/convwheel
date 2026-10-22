@@ -23,7 +23,7 @@ class Config:
     jpeg_quality: int = 92
     # Если пусто — результат кладётся рядом с исходным файлом
     output_dir: str = ""
-    # Оформление колеса: "citrus" (серая долька цитруса) или "classic" (тёмное с цветными секторами)
+    # Вид колеса (см. themes.py): citrus, orange, lime, neon, synthwave, glass, graphite, vinyl
     theme: str = "citrus"
     extra: dict = field(default_factory=dict)
 
@@ -33,7 +33,10 @@ class Config:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
             known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-            return cls(**known)
+            cfg = cls(**known)
+            if cfg.theme == "classic":          # так «Неон» назывался в версии 1.1
+                cfg.theme = "neon"
+            return cfg
         except Exception:
             return cls()
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import os
+import threading
 from pathlib import Path
 
 from ..config import CONFIG
@@ -34,11 +35,117 @@ def shift_down() -> bool:
     return bool(user32.GetAsyncKeyState(0x10) & 0x8000)
 
 
-def cursor_pos(x, y):
-    """Физические координаты курсора в момент клика (надёжнее при масштабе 125–200%)."""
-    pt = wt.POINT()
-    user32.GetCursorPos(ctypes.byref(pt))
-    return pt.x, pt.y
+# ------------------------------------------------------------------ перехват мыши
+# Отдельный экземпляр библиотек, чтобы наши argtypes не мешали другим модулям
+_u = ctypes.WinDLL("user32", use_last_error=True)
+_k = ctypes.WinDLL("kernel32", use_last_error=True)
+LRESULT = ctypes.c_ssize_t
+HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [("pt", wt.POINT), ("mouseData", wt.DWORD), ("flags", wt.DWORD),
+                ("time", wt.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+_u.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, ctypes.c_void_p, wt.DWORD]
+_u.SetWindowsHookExW.restype = ctypes.c_void_p
+_u.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+_u.CallNextHookEx.restype = LRESULT
+_u.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+_u.UnhookWindowsHookEx.restype = wt.BOOL
+_u.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT]
+_u.GetMessageW.restype = wt.BOOL
+_u.PeekMessageW.argtypes = [ctypes.POINTER(wt.MSG), wt.HWND, wt.UINT, wt.UINT, wt.UINT]
+_u.PeekMessageW.restype = wt.BOOL
+_u.TranslateMessage.argtypes = [ctypes.POINTER(wt.MSG)]
+_u.DispatchMessageW.argtypes = [ctypes.POINTER(wt.MSG)]
+_u.DispatchMessageW.restype = LRESULT
+_u.PostThreadMessageW.argtypes = [wt.DWORD, wt.UINT, wt.WPARAM, wt.LPARAM]
+_u.PostThreadMessageW.restype = wt.BOOL
+_u.GetAsyncKeyState.argtypes = [ctypes.c_int]
+_u.GetAsyncKeyState.restype = ctypes.c_short
+_k.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+_k.GetModuleHandleW.restype = ctypes.c_void_p
+_k.GetCurrentThreadId.restype = wt.DWORD
+
+WH_MOUSE_LL = 14
+WM_QUIT = 0x0012
+WM_REHOOK = 0x8000 + 0x31      # WM_APP + 0x31
+BUTTONS = {0x0201: ("left", True), 0x0202: ("left", False), 0x0204: ("right", True),
+           0x0205: ("right", False), 0x0207: ("middle", True), 0x0208: ("middle", False)}
+
+
+class MouseHook(threading.Thread):
+    """Низкоуровневый перехват мыши (WH_MOUSE_LL) в своём потоке с очередью сообщений.
+
+    Windows молча снимает такой перехват, если обработчик хоть раз ответил дольше
+    LowLevelHooksTimeout, и никак об этом не сообщает. Поэтому каждые 30 секунд мы ставим
+    перехват заново (сначала новый, потом снимаем старый — без «дыры»). Сам обработчик
+    только кладёт событие в очередь и сразу возвращает управление.
+    """
+
+    REHOOK_SEC = 30
+
+    def __init__(self, callback):
+        super().__init__(name="cw-mousehook", daemon=True)
+        self.cb = callback
+        self.status = "starting"
+        self.tid = 0
+        self.hhook = None
+        self._proc = HOOKPROC(self._handler)       # ссылку держим, иначе сборщик мусора её удалит
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+        if self.tid:
+            _u.PostThreadMessageW(self.tid, WM_QUIT, 0, 0)
+
+    def _install(self):
+        new = _u.SetWindowsHookExW(WH_MOUSE_LL, self._proc, _k.GetModuleHandleW(None), 0)
+        if new:
+            old, self.hhook = self.hhook, new
+            if old:
+                _u.UnhookWindowsHookEx(old)
+            self.status = "ok"
+        elif not self.hhook:
+            self.status = "error"
+
+    def _rehook_loop(self):
+        while not self._stop.wait(self.REHOOK_SEC):
+            if self.tid:
+                _u.PostThreadMessageW(self.tid, WM_REHOOK, 0, 0)
+
+    def run(self):
+        self.tid = _k.GetCurrentThreadId()
+        msg = wt.MSG()
+        _u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)      # создаём очередь сообщений потока
+        self._install()
+        threading.Thread(target=self._rehook_loop, name="cw-rehook", daemon=True).start()
+        while not self._stop.is_set():
+            r = _u.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if r == 0 or r == -1:
+                break
+            if msg.message == WM_REHOOK:
+                self._install()
+                continue
+            _u.TranslateMessage(ctypes.byref(msg))
+            _u.DispatchMessageW(ctypes.byref(msg))
+        if self.hhook:
+            _u.UnhookWindowsHookEx(self.hhook)
+            self.hhook = None
+
+    def _handler(self, n_code, w_param, l_param):
+        try:
+            if n_code == 0:
+                kind = BUTTONS.get(w_param)
+                if kind is not None:
+                    st = MSLLHOOKSTRUCT.from_address(l_param)
+                    shift = bool(_u.GetAsyncKeyState(0x10) & 0x8000)
+                    self.cb(kind[0], kind[1], st.pt.x, st.pt.y, shift)
+        except Exception:
+            pass
+        return _u.CallNextHookEx(None, n_code, w_param, l_param)
 
 
 def _class(hwnd) -> str:

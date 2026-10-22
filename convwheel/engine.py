@@ -1,7 +1,6 @@
 """Выполнение конвертации: временная папка → проверка → атомарный перенос рядом с исходником.
 
-Логика без Qt (run_job) отделена от Qt-обёртки (ConvertJob), чтобы её можно было
-тестировать и использовать из командной строки.
+Без Qt: вызывается в отдельном процессе-исполнителе (worker.py), из тестов и самопроверки.
 """
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ from typing import Callable
 from .config import CONFIG
 from .converters.common import ConversionError, Ctx
 from .formats import Target, converter_for
-from .platform_utils import config_dir
 
 
 def unique_path(p: Path) -> Path:
@@ -96,34 +94,5 @@ def run_job(files: list[Path], target: Target,
 
 
 def _log(text: str) -> None:
-    try:
-        with open(config_dir() / "convwheel.log", "a", encoding="utf-8") as fh:
-            fh.write(text.rstrip() + "\n")
-    except Exception:
-        pass
-
-
-# ------------------------------------------------------------------ Qt-обёртка
-try:
-    from PySide6.QtCore import QObject, QThread, Signal
-
-    class ConvertJob(QThread):
-        progressed = Signal(float, str)
-        succeeded = Signal(list)
-        failed = Signal(str)
-
-        def __init__(self, files: list[Path], target: Target, parent: QObject | None = None):
-            super().__init__(parent)
-            self.files, self.target = files, target
-
-        def run(self):
-            try:
-                outs = run_job(self.files, self.target, lambda p, s: self.progressed.emit(p, s))
-                self.succeeded.emit([str(o) for o in outs])
-            except ConversionError as e:
-                self.failed.emit(str(e))
-            except Exception as e:
-                _log(traceback.format_exc())
-                self.failed.emit(f"Неожиданная ошибка: {e}")
-except ImportError:  # pragma: no cover — Qt не обязателен для CLI/тестов
-    ConvertJob = None  # type: ignore
+    from .crashlog import write
+    write(text)
